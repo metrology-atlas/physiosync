@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+*.egg-info/
+dist/
+build/
+.venv/
+# machine-specific paths
+scripts/local.env
+# data never leaves the machine
+*.vital
+*.jsonl
+*.parquet
+*.db
+*.sqlite

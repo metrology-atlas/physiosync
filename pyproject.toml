@@ -1,0 +1,21 @@
+[project]
+name = "physiosync"
+version = "0.0.1"
+description = "Timing corrections for multi-signal physiological recordings: clock drift and ECG-PPG delay"
+license = "MIT"
+authors = [{ name = "Andrew J. Goodwin" }]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "scipy>=1.10"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 120
+
+[tool.hatch.build.targets.wheel]
+packages = ["physiosync"]
