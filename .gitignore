@@ -15,3 +15,5 @@ scripts/local.env
 *.parquet
 *.db
 *.sqlite
+# built documentation
+site/

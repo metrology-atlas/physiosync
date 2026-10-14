@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
-"""Sawtooth labels: one interval per tooth (a new interval wherever the sawtooth's properties change), with
-its parameters, the fiducials' time resolution and a confidence a downstream PAT estimator can act on.
+"""Sawtooth labels: one interval per tooth, with a confidence a downstream PAT estimator can act on.
+
+A new interval starts wherever the sawtooth's properties change. Each carries its parameters, the
+fiducials' time resolution and a confidence.
 
 :func:`sawtooth_labels` turns a measurement record (:func:`~physiosync.pat_measurement_model`) into a list
 of flat, JSON- and CSV-ready dicts. Each interval runs from one slip to the next (or to the start or end of
@@ -69,8 +71,22 @@ def _err(spec: dict) -> tuple[str, float | None]:
 
 def sawtooth_labels(rec: dict, *, usable_tiers: tuple[str, ...] = ("A", "B", "N"), max_error_s: float | None = None,
                     draws: int = 400, seed: int = 0) -> list[dict]:
-    """One dict per tooth of the record (fields :data:`LABEL_FIELDS`). ``usable_tiers`` and ``max_error_s``
-    decide ``usable_for_pat``."""
+    """Turn a measurement record into sawtooth labels, one per tooth.
+
+    Each interval runs from one slip to the next (or to the start or end of the analysed stretch). The module
+    docstring describes the fields. The remaining sync error in each interval is estimated by drawing from
+    the interval's error model (:func:`~physiosync.error_samples`).
+
+    Args:
+        rec: A measurement record from :func:`~physiosync.pat_measurement_model`.
+        usable_tiers: Tiers that may be ``usable_for_pat``.
+        max_error_s: If given, an interval whose 95th-percentile sync error exceeds this is not usable (s).
+        draws: Monte Carlo draws per interval for the sync-error summary.
+        seed: Seed for those draws.
+
+    Returns:
+        One flat, JSON- and CSV-ready dict per interval with the fields in :data:`LABEL_FIELDS`.
+    """
     rng = np.random.default_rng(seed)
     fe, fp = rec["fiducials"]["ecg"], rec["fiducials"]["ppg"]
     rounding_sd = float(np.hypot(_rounding_sd(fe), _rounding_sd(fp)))
@@ -122,16 +138,36 @@ def sawtooth_labels(rec: dict, *, usable_tiers: tuple[str, ...] = ("A", "B", "N"
 
 
 def sawtooth_label_tuples(labels: list[dict], prefix: str = "ppg_sawtooth") -> list[tuple[str, float, float]]:
-    """("ppg_sawtooth:A", start, end), ... - name-only annotations; ":x" is added when not usable for PAT."""
+    """Name-only annotations for tracks that hold a name and an interval only.
+
+    Args:
+        labels: The output of :func:`sawtooth_labels`.
+        prefix: Label name prefix.
+
+    Returns:
+        ``(name, start, end)`` tuples, e.g. ``("ppg_sawtooth:A", 10.0, 700.5)``. ``":x"`` is appended to the
+        name when the interval is not usable for PAT.
+    """
     return [(f"{prefix}:{d['tier']}" + ("" if d["usable_for_pat"] else ":x"), d["start"], d["end"]) for d in labels]
 
 
 def offset_label(rec: dict, *, basis: str = "", n_recordings: int | None = None,
                  setup_iqr_s: list[float] | None = None) -> dict:
-    """The combined hardware + filter delay that was removed from this recording's PPG times, as one label
-    over the whole analysed stretch (kept apart from the sawtooth labels so that it can be made as granular
-    as needed later: per setup, per device, per recording). ``recording_level_ms`` is the recording's own
-    median PAT before any offset (sawtooth removed): its corrected median is that minus ``offset_ms``."""
+    """The ECG-PPG offset removed from a recording, as one label over the analysed stretch.
+
+    The offset is the combined hardware and filter delay taken out of the PPG times. It is kept apart from
+    the sawtooth labels so that it can later be made as granular as needed (per setup, device or recording).
+
+    Args:
+        rec: A measurement record from :func:`~physiosync.pat_measurement_model`.
+        basis: How the offset was found. Default: the record's own ``level_from``.
+        n_recordings: Number of recordings the offset was pooled over, if it is a setup-level offset.
+        setup_iqr_s: Interquartile range of the setup's recording-level delays (s), if pooled.
+
+    Returns:
+        A dict with the fields in :data:`OFFSET_FIELDS`. ``recording_level_ms`` is the recording's own median
+        PAT before any offset (sawtooth removed); its corrected median is that minus ``offset_ms``.
+    """
     off = rec["offset"]
     return {"start": rec["t_start"], "end": rec["t_end"], "offset_ms": round(off["offset_s"] * 1000, 2),
             "adopted_pat_ms": round(off["adopted_pat_s"] * 1000, 1), "basis": basis or off.get("level_from", ""),

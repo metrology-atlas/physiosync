@@ -43,18 +43,34 @@ __all__ = ["ResolutionResult", "fiducial_resolution", "indices_from_times", "int
 
 
 def indices_from_times(times_s: np.ndarray, fs: float, t0: float | None = None) -> np.ndarray:
-    """Fiducial times (s) back to whole-sample indices at ``fs`` (rounded; times must sit on the grid)."""
+    """Convert fiducial times back to whole-sample indices.
+
+    Args:
+        times_s: Fiducial times (s). They must sit on the sample grid; they are rounded.
+        fs: Sampling rate (Hz).
+        t0: Time of sample 0 (s). Default: the first time.
+
+    Returns:
+        Integer sample indices.
+    """
     t = np.asarray(times_s, dtype=np.float64)
     base = t[0] if t0 is None else t0
     return np.round((t - base) * fs).astype(np.int64)
 
 
 def intervals(idx: np.ndarray, segments: np.ndarray | None = None, ibi_range: tuple[int, int] | None = None) -> np.ndarray:
-    """IBIs (samples) between consecutive fiducials, never across a segment boundary.
+    """Inter-beat intervals between consecutive fiducials, never across a segment boundary.
 
-    ``segments``: an id per fiducial (e.g. the continuous stretch it lies in); intervals are only taken
-    between fiducials with the same id. ``ibi_range``: (lo, hi) in samples; intervals outside it are
-    dropped as missed or spurious beats, and are reported as NaN so that differences skip them too.
+    Args:
+        idx: Fiducial sample indices, sorted.
+        segments: Optional id per fiducial (e.g. the continuous stretch it lies in). Intervals are taken only
+            between fiducials with the same id.
+        ibi_range: ``(low, high)`` plausible interval (samples). Intervals outside it are treated as missed
+            or spurious beats.
+
+    Returns:
+        Intervals in samples, as floats. Intervals across a boundary or outside ``ibi_range`` are NaN, so that
+        differences of consecutive intervals skip them too.
     """
     idx = np.asarray(idx, dtype=np.int64)
     ibi = np.diff(idx).astype(np.float64)
@@ -68,8 +84,11 @@ def intervals(idx: np.ndarray, segments: np.ndarray | None = None, ibi_range: tu
 
 
 def _box_smooth(h: np.ndarray, k: int) -> np.ndarray:
-    """Moving average over k bins (for even k, k+1 bins with half weight at both ends): the no-grid
-    expectation for each bin when the true distribution is smooth on the scale of k samples."""
+    """Moving average over k bins (for even k, k+1 bins with half weight at both ends).
+
+    This is the no-grid expectation for each bin when the true distribution is smooth on the scale of k
+    samples.
+    """
     if k % 2:
         w = np.ones(k) / k
     else:
@@ -78,8 +97,16 @@ def _box_smooth(h: np.ndarray, k: int) -> np.ndarray:
 
 
 def period_scan(values: np.ndarray, periods: np.ndarray) -> np.ndarray:
-    """Mean resultant length of exp(2*pi*i*v/P) for each period P (samples). About 1/sqrt(N) with no
-    grid; 1 when every value is a whole multiple of P."""
+    """Mean resultant length of ``exp(2*pi*i*v/P)`` at each period ``P``.
+
+    Args:
+        values: Whole-sample values, e.g. intervals (non-finite values are dropped).
+        periods: Periods to test (samples).
+
+    Returns:
+        The resultant at each period: about ``1/sqrt(N)`` with no grid, 1 when every value is a whole
+        multiple of ``P``. NaN everywhere when no value is finite.
+    """
     v = np.asarray(values, dtype=np.float64)
     v = v[np.isfinite(v)]
     if not v.size:
@@ -90,6 +117,24 @@ def period_scan(values: np.ndarray, periods: np.ndarray) -> np.ndarray:
 
 @dataclass
 class ResolutionResult:
+    """Result of :func:`fiducial_resolution` or :func:`pool`.
+
+    Attributes:
+        quantity: ``"ibi"`` or ``"ibi_diff"``, the quantity tested.
+        n: Number of values tested.
+        sample_period_s: The sample period (s), when ``fs`` was given.
+        share: For each grid ``k``, the observed fraction of values divisible by ``k``.
+        expected: For each ``k``, the fraction expected with no grid.
+        strength: For each ``k``, ``(share - expected) / (1 - expected)``: 0 for no grid, 1 for a perfect one.
+        z: For each ``k``, the binomial z-score of the excess.
+        testable: For each ``k``, whether the values spread widely enough for the no-grid expectation to hold.
+        periods: Periods scanned for non-integer locking (samples).
+        resultant: Resultant length at each scanned period.
+        effective_samples: The effective resolution in samples (1 = the sample period).
+        locking: Significant locking peaks (period, resultant, Rayleigh statistic), fundamentals only.
+        locking_reference: Whether ``locking`` was tested against a reference detector.
+        histogram: ``{"start": [first value], "counts": [...]}``, so results can be pooled.
+    """
     quantity: str
     n: int
     sample_period_s: float | None
@@ -107,9 +152,11 @@ class ResolutionResult:
 
     @property
     def effective_s(self) -> float | None:
+        """The effective resolution in seconds, or ``None`` without a sampling rate."""
         return None if self.sample_period_s is None else self.effective_samples * self.sample_period_s
 
     def to_dict(self) -> dict:
+        """A JSON-ready dict of all fields plus ``effective_s``."""
         d = asdict(self)
         d["effective_s"] = self.effective_s
         return d
@@ -131,21 +178,42 @@ def fiducial_resolution(
     reference_idx: np.ndarray | None = None,
     reference_segments: np.ndarray | None = None,
 ) -> ResolutionResult:
-    """Test whether fiducials at whole-sample indices ``idx`` sit on a grid coarser than one sample.
+    """Test whether fiducials sit on a grid coarser than one sample.
 
-    ``idx``        sorted whole-sample indices of one fiducial type in one signal.
-    ``fs``         sampling rate, only to express the result in seconds.
-    ``segments``   optional segment id per fiducial (see :func:`intervals`).
-    ``ibi_range``  (lo, hi) plausible IBI in samples, e.g. 60/250 bpm .. 60/30 bpm at ``fs``.
-    ``quantity``   "ibi" (default) or "ibi_diff" (the paper's histogram).
-    ``diff_limit`` for "ibi_diff": keep |difference| <= this many samples (default 4 * max_k).
-    ``reference_idx`` fiducials of the same beats from a reference detector or signal at the same rate
-                   (e.g. ECG R-peaks when testing PPG onsets): ``locking`` is then tested against it
-                   (see :func:`locking`) instead of the stricter stand-alone rule.
+    For every grid ``k = 2..max_k`` it compares the share of values divisible by ``k`` with the share
+    expected without a grid, and it scans non-integer periods for partial locking (see the module docstring).
 
-    Returns a :class:`ResolutionResult`; ``effective_samples`` is the largest k (2..max_k) that is
-    testable, has strength >= ``min_strength`` and z >= ``min_z``, and whose divisors that are tested
-    also pass (a grid of 4 implies a grid of 2), else 1.
+    Args:
+        idx: Sorted whole-sample indices of one fiducial type in one signal.
+        fs: Sampling rate (Hz), only to express results in seconds.
+        segments: Optional segment id per fiducial (see :func:`intervals`).
+        ibi_range: ``(low, high)`` plausible interval in samples, e.g. 60/250 bpm to 60/30 bpm at ``fs``.
+        quantity: ``"ibi"`` (the intervals; default) or ``"ibi_diff"`` (differences of consecutive intervals,
+            as in Ruffolo et al.).
+        max_k: Largest grid tested (samples).
+        min_strength: Smallest strength for a grid to pass.
+        min_z: Smallest z-score for a grid to pass.
+        diff_limit: For ``"ibi_diff"``, keep ``|difference| <= diff_limit`` samples. Default ``4 * max_k``.
+        min_n: Fewest values needed; with fewer, an empty result is returned.
+        max_period: Longest period scanned for locking (samples). Default ``2 * max_k``.
+        reference_idx: Fiducials of the same beats from a reference detector or signal at the same rate
+            (e.g. ECG R peaks when testing PPG onsets). ``locking`` is then tested against it (see
+            :func:`locking`) instead of the stricter stand-alone rule.
+        reference_segments: Segment ids for ``reference_idx``.
+
+    Returns:
+        A :class:`ResolutionResult`. ``effective_samples`` is the largest ``k`` that is testable, passes both
+        thresholds, and whose tested divisors also pass (a grid of 4 implies a grid of 2); otherwise 1.
+
+    Raises:
+        ValueError: ``quantity`` is not ``"ibi"`` or ``"ibi_diff"``.
+
+    Example:
+        >>> import numpy as np
+        >>> rng = np.random.default_rng(0)
+        >>> idx = np.cumsum(2 * rng.integers(200, 300, 500))     # every fiducial on a 2-sample grid
+        >>> fiducial_resolution(idx, fs=125.0).effective_samples
+        2
     """
     ibi = intervals(idx, segments, ibi_range)
     if quantity == "ibi":
@@ -228,8 +296,10 @@ def _peak(period: float, r: float, r_ref: float | None, n: float, fs: float | No
 
 
 def _fundamentals(peaks: list[dict], tol: float = 0.03) -> list[dict]:
-    """Drop peaks at P/m (m = 2..6) of a longer-period peak at least ~as strong: a comb of period P
-    is also a comb of P/2, P/3, ...; report the fundamental."""
+    """Drop peaks at P/m (m = 2..6) of a longer-period peak at least about as strong.
+
+    A comb of period P is also a comb of P/2, P/3, ...; only the fundamental is reported.
+    """
     keep = []
     for a in peaks:
         pa = a["period_samples"]
@@ -243,13 +313,22 @@ def _fundamentals(peaks: list[dict], tol: float = 0.03) -> list[dict]:
 
 def locking(test: ResolutionResult | dict, reference: ResolutionResult | dict, *, factor: float = 2.0,
             z: float = 5.0, min_resultant: float = 0.03) -> list[dict]:
-    """Periods at which the test fiducials lock but the reference fiducials do not.
+    """Periods at which test fiducials lock but reference fiducials do not.
 
-    The reference should time the same events with a detector of known resolution (ECG R-peaks for PPG
-    onsets, or a filtered-signal detector for a raw-sample one): its intervals have the same overall
-    shape, so its resultant at each period is the background the shape alone produces. A peak must be a
-    local maximum of the excess, at least ``factor`` times the reference, ``z`` / sqrt(N) above it and
-    at least ``min_resultant``. Up to 5 peaks, strongest first.
+    The reference should time the same events with a detector of known resolution (ECG R peaks for PPG
+    onsets, or a filtered-signal detector for a raw-sample one). Its intervals have the same overall shape,
+    so its resultant at each period is the background the shape alone produces.
+
+    Args:
+        test: Result for the fiducials under test (a :class:`ResolutionResult` or its ``to_dict()``).
+        reference: Result for the reference fiducials.
+        factor: A peak must be at least this many times the reference resultant.
+        z: ...and at least ``z / sqrt(N)`` above it.
+        min_resultant: ...and at least this resultant.
+
+    Returns:
+        Up to 5 peaks, strongest first, fundamentals only. Each has ``period_samples``, ``resultant``,
+        ``rayleigh``, ``reference_resultant`` and, with a sampling rate, ``period_s`` and ``freq_hz``.
     """
     t = test if isinstance(test, dict) else test.to_dict()
     ref = reference if isinstance(reference, dict) else reference.to_dict()
@@ -269,8 +348,23 @@ def locking(test: ResolutionResult | dict, reference: ResolutionResult | dict, *
 
 def pool(results: list[ResolutionResult | dict], *, max_k: int | None = None, min_strength: float = 0.5,
          min_z: float = 4.0, max_period: float | None = None) -> ResolutionResult:
-    """Combine results from several segments or recordings (same quantity and sampling rate) by adding
-    their histograms and testing the sum. Accepts results or their ``to_dict()`` forms."""
+    """Combine results from several segments or recordings and test the sum.
+
+    Histograms are added, so the results must share the quantity and sampling rate.
+
+    Args:
+        results: Results of :func:`fiducial_resolution`, or their ``to_dict()`` forms.
+        max_k: Largest grid tested. Default: as in the first result.
+        min_strength: Smallest strength for a grid to pass.
+        min_z: Smallest z-score for a grid to pass.
+        max_period: Longest period scanned for locking (samples).
+
+    Returns:
+        A :class:`ResolutionResult` for the pooled histogram.
+
+    Raises:
+        ValueError: No result has a histogram, or the results mix quantities.
+    """
     rs = [r if isinstance(r, dict) else r.to_dict() for r in results]
     rs = [r for r in rs if r.get("histogram")]
     if not rs:

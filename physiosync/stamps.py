@@ -27,21 +27,56 @@ __all__ = ["corrected_times", "stamp_clock"]
 def stamp_clock(record_times: np.ndarray, record_starts: np.ndarray, fs: float, *, gap_s: float = 1.0,
                 min_step_s: float = 0.002, cluster_s: float = 300.0, min_teeth: int = 1,
                 rate_ppm: float | None = None, correction_sign: int | None = None) -> dict:
-    """Fit one track's stamp sawtooth.
+    """Fit one track's stamp sawtooth: a device rate error and one offset per stretch.
 
-    ``record_times``  stamp of each record's first sample (s), in order.
-    ``record_starts`` index of that sample in the track (cumulative sample count).
-    ``gap_s``         a residual jump at least this large is a real gap (new stretch, own offset); so is a
-                      jump (above ``min_step_s``) whose sign is opposite to that of most corrections.
-    Single records stamped early or late (a step and its reverse) are neither corrections nor gaps and are
-    left out of the fit. ``correction_sign`` (+1/-1) fixes the direction of corrections when it is known
-    for the device (otherwise the direction of most small steps); steps the other way are gaps. Corrections within ``cluster_s`` of each other form one correction event.
-    The rate comes from whole teeth (event to event: the drift each event corrects over the time since the
-    last), or, with fewer than ``min_teeth``, from a least-squares line through the residual staircase, or
-    is ``rate_ppm`` when given (e.g. the device's known rate). The offsets put the line through the middle.
-    Returns {"t0", "fs", "rate_ppm" (the device's rate error: + = its samples last longer than nominal),
-    "breaks" (record indices starting a stretch), "offsets_s" (per stretch), "corrections" (count and median
-    size), "gaps" (count), "sawtooth_p2p_s", "residual_mad_s"}."""
+    The residual is the record stamp minus the time the sample count gives at the nominal rate. Small steps
+    in it are clock corrections; large steps, or steps against the usual correction direction, are real
+    gaps that start a new stretch. A single record stamped early or late (a step and its immediate reverse)
+    is neither and is left out of the fit. Corrections closer than ``cluster_s`` form one correction event.
+
+    The rate comes from whole teeth (the drift each event corrects divided by the time since the previous
+    event), or, with fewer than ``min_teeth`` teeth, from a least-squares line through the residual staircase,
+    or is ``rate_ppm`` when given. The per-stretch offsets put the line through the middle of the sawtooth.
+
+    Args:
+        record_times: Stamp of each record's first sample (s), in recording order.
+        record_starts: Index of that sample in the track (the cumulative sample count).
+        fs: Nominal sampling rate (Hz).
+        gap_s: A residual jump at least this large is a real gap (s).
+        min_step_s: Smallest residual jump treated as a step rather than noise (s).
+        cluster_s: Corrections within this time of each other form one event (s).
+        min_teeth: Fewest whole teeth needed to take the rate from the teeth.
+        rate_ppm: Use this rate error instead of fitting one (ppm), e.g. a device's known rate.
+        correction_sign: Direction of corrections (+1 or -1) when known for the device. Otherwise the
+            direction of most small steps is used; steps the other way are gaps.
+
+    Returns:
+        A dict describing the fitted clock, accepted by :func:`corrected_times`:
+
+        - ``t0``: stamp of the first record (s).
+        - ``fs``: the nominal rate (Hz).
+        - ``rate_ppm``: the device's rate error; positive means its samples last longer than nominal.
+        - ``rate_source``: ``"teeth"``, ``"fit"`` or ``"given"``.
+        - ``teeth``: number of whole teeth used.
+        - ``breaks``: record indices that start a stretch (the first is 0).
+        - ``offsets_s``: offset of each stretch (s).
+        - ``corrections``: event count, event times (s), median event size (s) and record count.
+        - ``gaps``: number of real gaps.
+        - ``sawtooth_p2p_s``: 1st-99th percentile spread of what is left after the fit (s).
+        - ``residual_mad_s``: robust SD of what is left after the fit (s).
+
+    Raises:
+        ValueError: Fewer than 3 records, or ``record_times`` and ``record_starts`` differ in length.
+
+    Example:
+        >>> import numpy as np
+        >>> starts = np.arange(0, 3_600_000, 100)            # 2 h of 100-sample records at 500 Hz
+        >>> lag = 30e-6 * starts / 500                        # a +30 ppm device falls behind the recorder
+        >>> stamps = starts / 500 + 0.01 * np.floor(lag / 0.01)   # stamps follow the count, stepped every 10 ms
+        >>> clock = stamp_clock(stamps, starts, 500.0)
+        >>> round(clock["rate_ppm"])
+        30
+    """
     t = np.asarray(record_times, dtype=np.float64)
     k = np.asarray(record_starts, dtype=np.float64)
     if t.size != k.size or t.size < 3:
@@ -112,8 +147,17 @@ def stamp_clock(record_times: np.ndarray, record_starts: np.ndarray, fs: float, 
 
 
 def corrected_times(clock: dict, record_starts: np.ndarray, sizes: np.ndarray | None = None) -> np.ndarray:
-    """Times on the fitted line: per record (``sizes`` None) or for every sample (``sizes`` = samples per
-    record, so the result has sum(sizes) entries)."""
+    """Place records or samples on a fitted stamp clock.
+
+    Args:
+        clock: The result of :func:`stamp_clock` for the same track.
+        record_starts: Index of each record's first sample in the track, as passed to :func:`stamp_clock`.
+        sizes: Samples per record. When given, the result has one time per sample (``sum(sizes)`` entries);
+            otherwise one time per record.
+
+    Returns:
+        Corrected times (s): the fitted line through the middle of the sawtooth, with ramps and steps removed.
+    """
     k = np.asarray(record_starts, dtype=np.float64)
     fs, b = clock["fs"], clock["rate_ppm"] * 1e-6
     seg = np.zeros(k.size, dtype=np.int64)

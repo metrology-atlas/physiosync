@@ -1,0 +1,68 @@
+[project]
+site_name = "physiosync"
+site_description = "Timing corrections for multi-signal physiological recordings: clock drift, ECG-PPG delay and fiducial resolution."
+use_directory_urls = false
+repo_url = "https://github.com/meshlab/physiosync"
+repo_name = "meshlab/physiosync"
+edit_uri = "edit/main/docs/"
+docs_dir = "docs"
+copyright = "© 2026 Andrew J. Goodwin, University of Sydney · MIT licence"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Get started" = "get-started.md" },
+  { "How-to guides" = [{ "Correct the ECG–PPG delay" = "how-to/correct-ecg-ppg-delay.md" }, { "Remove a record-stamp sawtooth" = "how-to/stamp-clock.md" }, { "Check fiducial resolution and frame locking" = "how-to/fiducial-resolution.md" }, { "Build a PAT measurement record and labels" = "how-to/measurement-and-labels.md" }, { "Pair beats when the delay is long" = "how-to/pair-beats.md" }] },
+  { "Concepts" = [{ "Clocks, drift and sawtooths" = "concepts/clocks.md" }, { "Frames and slips in the PPG" = "concepts/frames-and-slips.md" }, { "Confidence tiers" = "concepts/tiers.md" }, { "The PAT measurement model" = "concepts/measurement-model.md" }, { "Choosing the adopted mean PAT" = "concepts/adopted-pat.md" }] },
+  { "API reference" = [{ "Overview" = "reference/index.md" }, { "ecg_ppg" = "reference/ecg_ppg.md" }, { "stamps" = "reference/stamps.md" }, { "frames" = "reference/frames.md" }, { "quantisation" = "reference/quantisation.md" }, { "measurement" = "reference/measurement.md" }, { "labels" = "reference/labels.md" }, { "chains" = "reference/chains.md" }, { "pairing" = "reference/pairing.md" }, { "reference" = "reference/reference.md" }] },
+]
+
+[project.theme]
+features = ["navigation.instant", "navigation.tabs", "navigation.sections", "navigation.top", "navigation.indexes", "toc.follow", "content.code.copy", "search.highlight", "search.suggest"]
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"
+logo = "lucide/activity"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon-star"
+toggle.name = "Switch to light mode"
+
+[project.extra]
+generator = false
+
+[project.plugins.search]
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["."]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "google"
+show_source = false
+show_root_heading = true
+show_symbol_type_toc = true
+show_if_no_docstring = false
+separate_signature = true
+show_signature_annotations = true
+signature_crossrefs = true
+members_order = "source"
+filters = ["!^_"]
+
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.def_list]
+[project.markdown_extensions.footnotes]
+[project.markdown_extensions.md_in_html]
+[project.markdown_extensions.tables]
+[project.markdown_extensions.pymdownx.details]
+[project.markdown_extensions.pymdownx.superfences]
+[project.markdown_extensions.pymdownx.highlight]
+[project.markdown_extensions.toc]
+permalink = true

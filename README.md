@@ -3,8 +3,9 @@
 Timing corrections for multi-signal physiological recordings. MIT licence; needs only numpy and scipy.
 
 physiosync works on times and samples you give it. It does not read file formats, and it assumes no
-particular dataset, monitor, sampling rate or frame rate. Dataset connectors (VitalDB, AtriumDB,
-TimeNet...) call it at import time and store its results: corrected timing plus quality labels.
+particular dataset, monitor, sampling rate or frame rate. A dataset's import code can call it and store its
+results (corrected timing plus quality labels); the VitalDB connectors for TimeNet and AtriumDB are one
+example.
 
 ## Modules
 

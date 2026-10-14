@@ -10,8 +10,9 @@ The measured pulse arrival time (PAT, R-peak to PPG fiducial) carries, besides p
   to the same adopted mean.
 * a **sawtooth**: the PPG is produced in frames by a clock that runs at a slightly different rate from
   the ECG path, so the delay creeps by ``rate`` (seconds per second) and is reset by one whole frame
-  (a *frame slip*) whenever the accumulated difference reaches a frame. In VitalDB the frame is
-  33.3 ms (30 Hz) and the rate 20-55 ppm, fixed per recording setup and stable within a recording.
+  (a *frame slip*) whenever the accumulated difference reaches a frame. In the VitalDB surgical dataset,
+  for example, the frame is 33.3 ms (30 Hz) and the rate 20-55 ppm, fixed per recording setup and stable
+  within a recording.
 
 Model of the non-physiological delay of the PPG relative to the ECG at time t:
 
@@ -51,11 +52,22 @@ __all__ = ["EcgPpgDelay", "TierRules", "detect_slips", "fit_ecg_ppg_delay", "mat
 
 def match_beats(r_t: np.ndarray, p_t: np.ndarray, *, delay_range: tuple[float, float] = (0.1, 1.6),
                 bin_s: float = 0.004, tol_frac: float = 0.25) -> tuple[np.ndarray, np.ndarray, float]:
-    """Pair each R-peak with the PPG fiducial nearest to R + the typical delay.
+    """Pair each R peak with the PPG fiducial nearest to R plus the typical delay.
 
-    The typical delay is the mode of all PPG-minus-R differences within ``delay_range`` (so delays
-    longer than a beat are handled). Pairs further than ``tol_frac`` * median R-R from it are dropped.
-    Returns (indices into r_t, indices into p_t, typical delay in s).
+    The typical delay is the mode of all PPG-minus-R differences within ``delay_range``, so delays longer
+    than a beat are handled. When the delay is close to a beat, use :func:`~physiosync.pair_beats` instead.
+
+    Args:
+        r_t: R-peak times (s), sorted.
+        p_t: PPG fiducial times (s), sorted, on the same clock.
+        delay_range: ``(low, high)`` possible delays (s).
+        bin_s: Histogram bin for the mode (s).
+        tol_frac: Pairs further than this fraction of the median R-R interval from the typical delay are
+            dropped.
+
+    Returns:
+        ``(i, j, delay)``: indices into ``r_t``, indices into ``p_t`` and the typical delay (s). Empty arrays
+        and NaN when no pair is found.
     """
     r_t = np.asarray(r_t, dtype=np.float64)
     p_t = np.asarray(p_t, dtype=np.float64)
@@ -93,14 +105,25 @@ def _running_median(x: np.ndarray, k: int) -> np.ndarray:
 def detect_slips(t: np.ndarray, pat: np.ndarray, *, frame_s: float | None = None, threshold_s: float | None = None,
                  frame_range_s: tuple[float, float] = (0.010, 0.200),
                  smooth: int = 15, consec: int = 5, step_tol: float = 0.3) -> dict:
-    """Frame slips in a beat-by-beat PAT series (upward resets of about one frame).
+    """Find frame slips (upward resets of about one frame) in a beat-by-beat PAT series.
 
-    Tracks the running median of ``smooth`` beats with a line through the current tooth; a reset when
-    ``consec`` consecutive smoothed beats exceed it by ``threshold_s``. Its size is the median of
-    ``smooth`` beats after minus before. Resets within ``step_tol`` of the frame are slips; the frame,
-    if not given, is the most common reset size within ``frame_range_s``. ``threshold_s`` defaults to
-    half the frame when the frame is given, else 16 ms.
-    Returns {"t": slip times, "step_s": sizes, "frame_s": frame, "other_t": resets that are not slips}.
+    Tracks the running median of ``smooth`` beats with a line through the current tooth. A reset is declared
+    when ``consec`` consecutive smoothed beats exceed the line by ``threshold_s``; its size is the median of
+    ``smooth`` beats after minus before. Resets within ``step_tol`` of the frame are slips.
+
+    Args:
+        t: Beat times (s).
+        pat: PAT at each beat (s).
+        frame_s: The frame (s). Default: the most common reset size within ``frame_range_s``.
+        threshold_s: Reset threshold (s). Default: half the frame when the frame is given, else 16 ms.
+        frame_range_s: ``(low, high)`` range searched for the frame (s).
+        smooth: Beats in the running median.
+        consec: Consecutive beats above the line needed for a reset.
+        step_tol: Largest relative difference from the frame for a reset to count as a slip.
+
+    Returns:
+        ``t`` (slip times), ``step_s`` (their sizes), ``frame_s`` (the frame used) and ``other_t`` (resets
+        that are not slips).
     """
     t = np.asarray(t, dtype=np.float64)
     pat = np.asarray(pat, dtype=np.float64)
@@ -154,7 +177,30 @@ def detect_slips(t: np.ndarray, pat: np.ndarray, *, frame_s: float | None = None
 
 @dataclass
 class EcgPpgDelay:
-    """Fitted non-physiological delay of the PPG relative to the ECG (see module docstring)."""
+    """The fitted non-physiological delay of the PPG relative to the ECG.
+
+    The delay ``D(t)`` is a constant offset (hardware and filter delay) plus a sawtooth: the PPG creeps
+    earlier at a tooth's rate and jumps back one frame at each slip. Create it with
+    :func:`fit_ecg_ppg_delay`; apply it with :meth:`correct`.
+
+    Attributes:
+        adopted_pat_s: The population mean PAT the corrected data should have (s).
+        offset_s: Combined hardware and filter offset, the mean of ``D`` (s).
+        frame_s: The frame (s), or ``None`` without a sawtooth.
+        t_start: Start of the analysed stretch (ECG time, s).
+        t_end: End of the analysed stretch (s).
+        slips_t: Slip times (s).
+        inserted_t: Slips inferred where one was missed (s).
+        tooth_edges: ``t_start``, the slips, ``t_end`` (s).
+        tooth_rate: Creep rate of each tooth (s/s; positive means the PAT shrinks).
+        tooth_source: How each tooth's rate was found.
+        sawtooth: Whether a sawtooth is modelled (``False``: offset only).
+        tooth_tier: Confidence tier of each tooth: A, B, C (corrected), N (none seen) or U (unresolved).
+        tooth_reason: Why each tooth has its tier.
+        apply_min_tier: Teeth below this tier keep the offset only.
+        qc: Fit diagnostics, e.g. ``raw_level_s`` (median PAT with the sawtooth removed, no offset),
+            ``offset_basis`` and ``recording_rate_ppm``.
+    """
 
     adopted_pat_s: float
     offset_s: float                      # combined hardware + filter offset (mean of D)
@@ -191,16 +237,28 @@ class EcgPpgDelay:
         return saw
 
     def applied(self, k: int) -> bool:
-        """Whether tooth k's sawtooth correction is applied (its tier is at or above apply_min_tier)."""
+        """Whether tooth ``k``'s sawtooth correction is applied.
+
+        Args:
+            k: Tooth index.
+
+        Returns:
+            ``True`` when the tooth's tier is at or above :attr:`apply_min_tier`.
+        """
         order = {"A": 0, "B": 1, "C": 2}
         t = self.tooth_tier[k] if k < len(self.tooth_tier) else "U"
         return t in order and order[t] <= order.get(self.apply_min_tier, 1)
 
     def quality_intervals(self) -> list[dict]:
-        """Intervals (ECG time, s) with the confidence of the PPG timing in them, adjacent equal ones
-        merged: tier A/B/C = sawtooth corrected (high / moderate / low confidence), N = no sawtooth seen
-        (offset only), U = possibly affected but not corrected (offset only). ``applied`` says whether
-        the sawtooth correction is in effect (tiers below ``apply_min_tier`` are reported as U)."""
+        """Intervals with the confidence of the PPG timing in them, adjacent equal ones merged.
+
+        Tier A, B or C: sawtooth corrected (high, moderate or low confidence). N: no sawtooth seen (offset only).
+        U: possibly affected but not corrected (offset only). Tiers below :attr:`apply_min_tier` are reported as U.
+
+        Returns:
+            One dict per interval (ECG time, s): ``start``, ``end``, ``tier``, ``applied``, ``teeth``,
+            ``rate_ppm`` and ``reason``.
+        """
         edges = self.tooth_edges if self.tooth_edges else [self.t_start, self.t_end]
         tiers = self.tooth_tier or ["U"] * (len(edges) - 1)
         out: list[dict] = []
@@ -221,12 +279,25 @@ class EcgPpgDelay:
         return out
 
     def labels(self, prefix: str = "ppg_timing") -> list[tuple[str, float, float]]:
-        """(label name, start s, end s) for every quality interval, e.g. ("ppg_timing:A", 100.0, 740.5),
-        ready to be written as annotations by a connector."""
+        """Name-only annotations for every quality interval, ready for a connector to write.
+
+        Args:
+            prefix: Label name prefix.
+
+        Returns:
+            ``(name, start_s, end_s)`` tuples, e.g. ``("ppg_timing:A", 100.0, 740.5)``.
+        """
         return [(f"{prefix}:{q['tier']}", q["start"], q["end"]) for q in self.quality_intervals()]
 
     def shift(self, t: np.ndarray) -> np.ndarray:
-        """D(t): how much later the PPG appears than it should, at ECG time t (s)."""
+        """The delay ``D(t)``: how much later the PPG appears than it should, at ECG time ``t``.
+
+        Args:
+            t: Times (s).
+
+        Returns:
+            ``D(t)`` (s).
+        """
         return self._saw(t) - self._saw_ref + self.offset_s
 
     @property
@@ -234,15 +305,35 @@ class EcgPpgDelay:
         return float(self.qc.get("saw_median_s", 0.0))
 
     def correct(self, ppg_t: np.ndarray) -> np.ndarray:
-        """Corrected PPG times. (The shift is evaluated at the PPG time itself; it changes by at most
-        a few microseconds over the PAT, far below a sample.)"""
+        """Corrected PPG times.
+
+        The shift is evaluated at the PPG time itself; it changes by at most a few microseconds over the PAT,
+        far below a sample.
+
+        Args:
+            ppg_t: PPG fiducial or sample times (s).
+
+        Returns:
+            ``ppg_t - D(ppg_t)`` (s).
+        """
         ppg_t = np.asarray(ppg_t, dtype=np.float64)
         return ppg_t - self.shift(ppg_t)
 
     def timing_plan(self, start_t: float, n: int, fs: float) -> list[dict]:
-        """Corrected timing of a continuous PPG stream of ``n`` samples at nominal ``fs`` starting at
-        ``start_t``: one segment per tooth, each with its first sample index, corrected start time and
-        effective sampling rate (the tooth's creep makes it differ from ``fs`` by ``rate``)."""
+        """Corrected timing of a continuous PPG stream, one segment per tooth.
+
+        Within a tooth the creep makes the effective sampling rate differ slightly from the nominal one; at a
+        slip the timing steps. Storing one segment per tooth keeps the stream exact.
+
+        Args:
+            start_t: Time of the first sample (s).
+            n: Number of samples.
+            fs: Nominal sampling rate (Hz).
+
+        Returns:
+            One dict per segment: ``first`` (index of its first sample), ``count``, ``start_t`` (its corrected
+            start time, s), ``fs`` (its effective rate, Hz) and ``rate_ppm``.
+        """
         t_nom = start_t + np.arange(n) / fs
         cuts = [0]
         if self.sawtooth and self.frame_s is not None:
@@ -264,6 +355,7 @@ class EcgPpgDelay:
         return plan
 
     def to_dict(self) -> dict:
+        """All fields as a dict."""
         return asdict(self)
 
 
@@ -274,31 +366,41 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
                       apply_min_tier: str = "B", tier_rules: TierRules | None = None,
                       ref_t: np.ndarray | None = None, ref_max_step_s: float = 0.010,
                       predict_slips: bool = True, offset_s: float | None = None) -> EcgPpgDelay:
-    """Fit the PPG delay model from R-peak and PPG fiducial times (s, same clock).
+    """Fit the PPG delay model from R-peak and PPG fiducial times on the same clock.
 
-    ``adopted_pat_s``  required: the population mean PAT for this fiducial that the corrected data
-                       should have (one value for every dataset to be combined).
-    ``sawtooth``       False: offset only.
-    ``frame_s``        the frame (s) if known (VitalDB 1/30); else estimated from the reset sizes.
-    ``rate_prior_ppm`` creep rate of the recording setup, used for teeth that cannot be measured.
-    ``matched``        r_t and ppg_t are already beat-matched pairs (same length); else :func:`match_beats`.
-    ``rate_range_ppm`` plausible creep rates; tooth lengths outside frame / rate are not used.
-    ``apply_min_tier`` "A", "B" or "C": teeth whose confidence tier is lower keep the offset only and
-                       are labelled U (see :meth:`EcgPpgDelay.quality_intervals`).
-    ``tier_rules``     thresholds of the tiers (:class:`TierRules`).
-    ``ref_t``          optional arrival times of the same beats in a reference signal without the PPG's
-                       timing artefacts, e.g. the arterial pressure upstroke (one per R-peak of ``r_t``,
-                       NaN where absent). With it: slips are also looked for in reference->PPG, which
-                       leaves out the pre-ejection period and is quieter; a step that also appears in
-                       ECG->reference (more than ``ref_max_step_s``) is physiology and is rejected; a
-                       step that does not is confirmed as a PPG slip.
-    ``offset_s``       the combined hardware + filter delay, if known from outside the recording (e.g. the
-                       median over many recordings of the same setup, see :func:`setup_offsets`). Then the
-                       recording keeps its own PAT level; without it, the recording is snapped so that its
-                       corrected median equals ``adopted_pat_s``.
-    ``predict_slips``  look one tooth beyond the first and last slip for slips that were due (tooth
-                       length from the recording's own teeth, else ``rate_prior_ppm``) and add them where
-                       the data shows the step; stop at the first place without one.
+    Pairs the beats (unless ``matched``), detects slips, measures each tooth's creep rate, sets the offset
+    and gives every tooth a confidence tier (:class:`TierRules`).
+
+    Args:
+        r_t: R-peak times (s).
+        ppg_t: PPG fiducial times (s).
+        adopted_pat_s: Required. The population mean PAT for this fiducial that the corrected data should
+            have; use one value for every dataset to be combined.
+        sawtooth: ``False`` fits the offset only.
+        frame_s: The frame (s), if known (e.g. 1/30 for the SNUADC PLETH in VitalDB). Default: estimated from the resets.
+        rate_prior_ppm: Creep rate of the recording setup, used for teeth that cannot be measured.
+        matched: ``r_t`` and ``ppg_t`` are already beat-matched pairs of equal length. Otherwise they are
+            paired with :func:`match_beats`.
+        threshold_s: Reset threshold for :func:`detect_slips`.
+        smooth: Beats in the running median for :func:`detect_slips`.
+        min_tooth_s: Shortest tooth used to measure a rate (s).
+        rate_range_ppm: Plausible creep rates; teeth whose length implies a rate outside are not used.
+        apply_min_tier: ``"A"``, ``"B"`` or ``"C"``. Teeth of a lower tier keep the offset only and are
+            labelled U.
+        tier_rules: Thresholds of the tiers. Default: :class:`TierRules` defaults.
+        ref_t: Optional arrival times of the same beats in a reference signal without the PPG's timing
+            artefacts, e.g. the arterial pressure upstroke (one per R peak, NaN where absent). Slips are then
+            also looked for in reference-to-PPG, which leaves out the pre-ejection period and is quieter. A step
+            that also appears in ECG-to-reference is physiology and is rejected; one that does not is confirmed.
+        ref_max_step_s: Largest ECG-to-reference step still compatible with a PPG slip (s).
+        predict_slips: Look one tooth beyond the first and last slips for slips that were due, and add them
+            where the data shows the step; stop at the first place without one.
+        offset_s: The combined hardware and filter delay, if known from outside the recording (e.g. a setup's
+            median from :func:`setup_offsets`). The recording then keeps its own PAT level; without it, the
+            recording is snapped so that its corrected median equals ``adopted_pat_s``.
+
+    Returns:
+        The fitted :class:`EcgPpgDelay`.
     """
     if adopted_pat_s is None or not np.isfinite(adopted_pat_s):
         raise ValueError("adopted_pat_s must be given: the population mean PAT to shift to")
@@ -380,13 +482,23 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
 
 def setup_offsets(levels: dict, setups: dict, *, adopted_pat_s: float, min_recordings: int = 3,
                   plausible_s: tuple[float, float] | None = None) -> dict:
-    """One hardware + filter delay per recording setup, from many recordings.
+    """One hardware and filter delay per recording setup, from many recordings.
 
-    ``levels``: recording -> its raw PAT level (``qc["raw_level_s"]`` of a fit: median PAT with the sawtooth
-    removed, no offset). ``setups``: recording -> setup name. Each setup's delay is the median level of its
-    recordings minus ``adopted_pat_s``; setups with fewer than ``min_recordings`` recordings (and recordings
-    without a setup) get the median over all recordings. Levels outside ``plausible_s`` (e.g. beats paired
-    one beat out) are left out. Returns {"setups": {name: {...}}, "all": {...}, "by_recording": {rec: {...}}}."""
+    Each setup's delay is the median level of its recordings minus ``adopted_pat_s``. Setups with fewer than
+    ``min_recordings`` recordings, and recordings without a setup, get the median over all recordings.
+
+    Args:
+        levels: Recording -> its raw PAT level (``qc["raw_level_s"]`` of a fit: median PAT with the sawtooth
+            removed, no offset; s).
+        setups: Recording -> setup name.
+        adopted_pat_s: The adopted population mean PAT (s).
+        min_recordings: Fewest recordings for a setup to get its own delay.
+        plausible_s: ``(low, high)`` plausible levels (s); others (e.g. beats paired one beat out) are left out.
+
+    Returns:
+        ``setups`` (name -> offset, count, basis), ``all`` (the pooled offset), ``by_recording`` (recording ->
+        the offset to use) and ``adopted_pat_s``.
+    """
     lv = {k: float(v) for k, v in levels.items() if v is not None and np.isfinite(v)
           and (plausible_s is None or plausible_s[0] <= v <= plausible_s[1])}
     allv = np.array(list(lv.values()))
@@ -408,14 +520,23 @@ def setup_offsets(levels: dict, setups: dict, *, adopted_pat_s: float, min_recor
 
 def sawtooth_evidence(t: np.ndarray, y: np.ndarray, rate: float, frame: float, *, smooth: int = 15,
                       phases: int = 50) -> dict:
-    """Is a frame-slip sawtooth of known ``rate`` (s/s) and ``frame`` (s) present in the series ``y``
-    (a delay, e.g. PAT, in s, at times ``t``)?
+    """Test whether a frame-slip sawtooth of known rate and frame is present in a delay series.
 
-    ``smooth``-beat medians of y, minus a sawtooth of exactly one frame at the best of ``phases`` phases,
-    are fitted by a constant + slope. ``score`` is the share of the variance (after constant + slope) the
-    sawtooth explains: near 1 when it is there, negative when subtracting it makes things worse.
-    ``mirror`` is the same with the sawtooth reversed (creep up, drop down), which no slip produces.
-    ``teeth`` is how many slips the rate implies over the series. Slope-only creep is not a sawtooth.
+    ``smooth``-beat medians of ``y``, minus a sawtooth of exactly one frame at the best of ``phases`` phases,
+    are fitted by a constant plus a slope. Slope-only creep is not a sawtooth.
+
+    Args:
+        t: Times (s).
+        y: A delay, e.g. PAT, at those times (s).
+        rate: The creep rate (s/s).
+        frame: The frame (s).
+        smooth: Beats per median.
+        phases: Phases tried.
+
+    Returns:
+        ``score`` (share of the variance, after constant and slope, that the sawtooth explains: near 1 when
+        present, negative when subtracting it makes things worse), ``mirror`` (the same with the sawtooth
+        reversed, which no slip produces; a control) and ``teeth`` (slips the rate implies over the series).
     """
     t = np.asarray(t, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
@@ -447,8 +568,9 @@ def sawtooth_evidence(t: np.ndarray, y: np.ndarray, rate: float, frame: float, *
 
 @dataclass
 class TierRules:
-    """Thresholds of the confidence tiers of a tooth (the stretch between two slips, or between a slip
-    and the end of the analysed stretch).
+    """Thresholds of the confidence tiers of a tooth.
+
+    A tooth is the stretch between two slips, or between a slip and the end of the analysed stretch.
 
     A (high): a tooth whose rate is corroborated: a full tooth (two detected slips) within ``rec_tol_a``
        of the recording's median tooth rate (at least ``min_teeth_a`` full teeth) or, with fewer teeth,
@@ -614,8 +736,11 @@ def _p2p(t: np.ndarray, x: np.ndarray, win_s: float = 60.0) -> float:
 
 
 def _local_steps(t: np.ndarray, pat: np.ndarray, half: int) -> np.ndarray:
-    """Step at each beat boundary i (between beats i-1 and i): median of the next ``half`` beats minus
-    median of the previous ``half``. NaN where either side is short."""
+    """Step at each beat boundary i (between beats i-1 and i).
+
+    The median of the next ``half`` beats minus the median of the previous ``half``; NaN where either
+    side is short.
+    """
     n = pat.size
     s = np.full(n, np.nan)
     if n < 2 * half + 1:
@@ -628,8 +753,11 @@ def _local_steps(t: np.ndarray, pat: np.ndarray, half: int) -> np.ndarray:
 
 
 def _unit_tooth(iv: np.ndarray, tol: float) -> float | None:
-    """The basic tooth length: the shortest length that most teeth are whole multiples (1-4) of, with
-    at least two single teeth. Missed slips make teeth of 2, 3 ... units; a median would pick those."""
+    """The basic tooth length.
+
+    The shortest length that most teeth are whole multiples (1-4) of, with at least two single teeth.
+    Missed slips make teeth of 2, 3 ... units; a median would pick those.
+    """
     best, best_score = None, 0
     for L in sorted(iv):
         k = np.round(iv / L)
@@ -674,8 +802,11 @@ def _fill_rates(m: EcgPpgDelay, tr: np.ndarray, pat: np.ndarray, prior_ppm: floa
     s15f = np.where(np.isfinite(s15), s15, -np.inf)
 
     def at(x: float, w: float) -> tuple[int | None, float, float]:
-        """The boundary with the largest 15-beat step within w of x, its 15-beat step, and the largest
-        3-beat step within 3 beats of it (a frame slip is sharp: one beat to the next)."""
+        """The boundary with the largest 15-beat step within w of x.
+
+        Returns it, its 15-beat step, and the largest 3-beat step within 3 beats of it (a frame slip is
+        sharp: one beat to the next).
+        """
         a_, b_ = np.searchsorted(bound, x - w), np.searchsorted(bound, x + w, side="right")
         if b_ <= a_ or not np.isfinite(s15f[a_:b_]).any():
             return None, float("nan"), float("nan")

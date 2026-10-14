@@ -40,17 +40,34 @@ def _ivi_dist(a: np.ndarray, b: np.ndarray) -> float:
 def pair_beats(r_t: np.ndarray, p_t: np.ndarray, *, window: int = 20, delay_range_s: tuple[float, float] = (0.1, 1.6),
                max_rms_s: float = 0.015, margin: float = 1.5, expected_delay_s: tuple[float, float] | None = None,
                mode_halfwidth: int = 30) -> dict:
-    """Pair PPG fiducials (times ``p_t``, s) with ECG R peaks (``r_t``, s), both sorted, same clock.
+    """Pair PPG fiducials with ECG R peaks by matching their inter-beat-interval rhythm.
 
-    ``delay_range_s``     delays (PPG minus R) that are possible at all.
-    ``max_rms_s``         a window matches if the RMS difference of its intervals is at most this.
-    ``margin``            and if the one-beat-shifted alternatives are at least ``margin`` times further.
-    ``expected_delay_s``  optional (low, high), e.g. the setup's known delay +- 0.2 s: for windows the rhythm
-                          cannot decide (too regular), the shift whose delay lies in this range; and for beats
-                          the rhythm leaves unpaired (detection errors break the interval windows), the one R
-                          peak whose delay lies in it. ``source`` says which rule paired each beat.
-    Returns {"r_index", "p_index" (paired beats), "delay_s", "shift" (per PPG beat, NaN unpaired),
-    "qc": {...}}."""
+    Windows of ``window`` consecutive PPG intervals are matched to the ECG's by Euclidean distance, giving a
+    beat-index shift per window. The shift is constant along a stretch except where a beat is missed or extra,
+    so the running mode of the good matches is carried to every PPG beat. A match is good when its RMS
+    difference is small and clearly smaller than that of the one-beat-shifted alternatives. Needs the optional
+    dependency hrvmatch (see the module docstring).
+
+    Args:
+        r_t: R-peak times (s), sorted.
+        p_t: PPG fiducial times (s), sorted, on the same clock.
+        window: Intervals per matching window.
+        delay_range_s: ``(low, high)`` delays (PPG minus R) that are possible at all (s).
+        max_rms_s: A window matches if the RMS difference of its intervals is at most this (s).
+        margin: ...and if the one-beat-shifted alternatives are at least this many times further.
+        expected_delay_s: Optional ``(low, high)`` plausible delay (s), e.g. the setup's known delay
+            +-0.2 s. It decides windows the rhythm cannot (too regular), and pairs beats the rhythm left
+            unpaired when exactly one R peak gives a delay in range.
+        mode_halfwidth: Half-width of the running mode of window shifts (PPG beats).
+
+    Returns:
+        A dict with ``r_index`` and ``p_index`` (indices of the paired beats), ``delay_s`` (PPG minus R),
+        ``source`` (``"rhythm"`` or ``"window"``: which rule paired each beat), ``shift`` (per PPG beat, NaN
+        where unpaired) and ``qc`` (window and pairing counts, median delay, shift histogram, or ``reason``).
+
+    Raises:
+        ImportError: hrvmatch is not installed.
+    """
     get_matches = _get_matches()
     r_t = np.asarray(r_t, dtype=np.float64)
     p_t = np.asarray(p_t, dtype=np.float64)

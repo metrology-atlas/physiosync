@@ -20,7 +20,23 @@ __all__ = ["pat_reference"]
 
 
 def pat_reference(tiers: tuple[str, ...] | None = None) -> list[dict]:
-    """Rows of the reference table, optionally only the given tiers (e.g. ("A", "B"))."""
+    """Return the published pulse-arrival-time reference table.
+
+    The table ships with the package (``data/pat_reference.csv``). Each row is one study or subgroup:
+    population, acquisition hardware, how ECG and PPG were clocked, the ECG and PPG fiducials, the mean PAT
+    and its spread. See the module docstring for the tiers.
+
+    Args:
+        tiers: Keep only rows of these tiers, e.g. ``("A", "B")``. ``None`` returns every row.
+
+    Returns:
+        One dict per row, keyed by the CSV header. All values are strings, as read from the CSV.
+
+    Example:
+        >>> rows = pat_reference(tiers=("A",))
+        >>> "Block et al" in {r["study"].split(",")[0] for r in rows}
+        True
+    """
     with resources.files("physiosync").joinpath("data/pat_reference.csv").open(encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
     return [r for r in rows if tiers is None or r["tier"] in tiers]

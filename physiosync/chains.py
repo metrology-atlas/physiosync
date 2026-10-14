@@ -9,7 +9,7 @@ slow drift); the chain stops where none is found (a pause or a phase jump). Each
 slips is a chained tooth, corrected with rate = frame / its length.
 
 These teeth are a separate label track (``ppg_sawtooth_chain``), not a change to the main fit: checked
-against arterial pressure on VitalDB they are of B-to-C quality (see the project's report). Each label
+against arterial pressure on the VitalDB surgical dataset they were of B-to-C quality. Each label
 carries the tooth's parameters, the main fit's tier over it and the caller's error estimate, so a
 downstream estimator can decide whether to use it.
 """
@@ -17,6 +17,7 @@ downstream estimator can decide whether to use it.
 from __future__ import annotations
 
 import itertools
+from typing import Any
 
 import numpy as np
 
@@ -31,7 +32,27 @@ CHAIN_FIELDS = ["start", "end", "duration_s", "slope_ppm", "amplitude_ms", "toot
 
 def chain_slips(t: np.ndarray, pat: np.ndarray, *, frame_s: float, rate: float, tol: float = 0.01,
                 min_step: float = 0.5, min_window_s: float = 10.0, min_sep_s: float = 60.0) -> list[list[tuple[float, float]]]:
-    """Chains of (time, 15-beat step) slips in a beat-by-beat delay series (``pat`` at beat times ``t``)."""
+    """Find chains of slips one tooth length apart in a beat-by-beat delay series.
+
+    With the sawtooth rate known, the tooth length ``L = frame_s / rate`` is known to about a percent. A
+    chain starts at a strong slip (a 15-beat step of 0.6-1.5 frames and a 3-beat step of at least 0.4 frame)
+    and looks for the next slip one ``L`` on, within ``max(min_window_s, tol * L)``. A found slip re-anchors
+    the chain (following slow drift); the chain stops where none is found.
+
+    Args:
+        t: Beat times (s), in order.
+        pat: The delay at each beat (s), e.g. PPG fiducial time minus R-peak time.
+        frame_s: The frame (s), the size of one slip.
+        rate: The sawtooth rate as a fraction (ppm * 1e-6).
+        tol: Search window as a fraction of the tooth length.
+        min_step: Smallest 15-beat step accepted as a slip (frames).
+        min_window_s: Smallest search window (s).
+        min_sep_s: Slips closer than this are one slip (s).
+
+    Returns:
+        One list per chain of two or more slips, each slip a ``(time_s, step_s)`` tuple, chains in time order.
+        Empty with fewer than 60 beats or a non-positive rate.
+    """
     t = np.asarray(t, dtype=np.float64)
     pat = np.asarray(pat, dtype=np.float64)
     if t.size < 60 or rate <= 0:
@@ -73,13 +94,28 @@ def chain_slips(t: np.ndarray, pat: np.ndarray, *, frame_s: float, rate: float, 
 
 
 def chain_labels(m: EcgPpgDelay, r_t: np.ndarray, ppg_t: np.ndarray, *, rate_ppm: float | None = None,
-                 error_s: tuple[float, float] | None = None, usable: bool = False, **kw) -> list[dict]:
-    """Chained teeth of a fitted recording as label dicts (fields :data:`CHAIN_FIELDS`).
+                 error_s: tuple[float, float] | None = None, usable: bool = False, **kw: Any) -> list[dict]:
+    """The chained teeth of a fitted recording, as label dicts.
 
-    ``rate_ppm``  the rate to chain with; default the recording's own corroborated rate (none: no labels).
-    ``error_s``   (typical, 90th percentile) remaining sync error of chained teeth, as validated by the caller.
-    ``usable``    the ``usable_for_pat`` value to give them (default False: a downstream method opts in).
-    ``kw``        passed to :func:`chain_slips` (tol, min_step, ...)."""
+    Chained teeth are a separate, lower-confidence label track (``ppg_sawtooth_chain``), not a change to the
+    main fit. Each label carries the tooth's parameters, the main fit's tiers over it and the caller's error
+    estimate, so a downstream estimator can decide whether to use it.
+
+    Args:
+        m: The fit from :func:`fit_ecg_ppg_delay` for this recording.
+        r_t: R-peak times of the paired beats (s).
+        ppg_t: PPG fiducial times of the same beats (s).
+        rate_ppm: Rate to chain with (ppm). Default: the recording's own corroborated rate; without one, no
+            labels are returned.
+        error_s: ``(typical, 90th percentile)`` remaining sync error of chained teeth (s), as validated by
+            the caller.
+        usable: The ``usable_for_pat`` value given to every label. Default ``False``: a downstream method
+            opts in.
+        **kw: Passed to :func:`chain_slips` (``tol``, ``min_step``, ...).
+
+    Returns:
+        One dict per chained tooth with the fields in :data:`CHAIN_FIELDS`.
+    """
     rate = (rate_ppm or m.qc.get("recording_rate_ppm") or 0.0) * 1e-6
     f = m.frame_s
     if not rate or not f:

@@ -69,13 +69,28 @@ def _quant(res: float | None, rounding: str) -> dict:
 def fiducial_error_model(index: np.ndarray | None, fs: float, *, frame_samples: float | None = None,
                          pat_noise_s: float | None = None, other_sd_s: float = 0.0, lock_ratio_min: float = 2.0,
                          ibi_range: tuple[int, int] | None = None) -> dict:
-    """The timing error of one recording's fiducial, from its own data.
+    """The timing error model of one recording's fiducial, from its own data.
 
-    A fiducial that locks to a frame grid (``index``: its integer sample indices; locked when its interval
-    resultant at ``frame_samples`` is at least ``lock_ratio_min`` times the control periods', see
-    :func:`~physiosync.interval_lock`) is rounded to the frame: uniform, one frame wide. Otherwise its error is
-    jitter: normal, with SD the beat-to-beat PAT noise ``pat_noise_s`` less the other fiducial's
-    ``other_sd_s`` (an upper bound: physiology is in the noise too). With neither, one sample, uniform."""
+    A fiducial that locks to a frame grid is rounded to the frame: uniform, one frame wide. It counts as
+    locked when its interval resultant at ``frame_samples`` is at least ``lock_ratio_min`` times that at the
+    control periods (see :func:`~physiosync.interval_lock`). Otherwise its error is jitter: normal, with SD
+    the beat-to-beat PAT noise less the other fiducial's share (an upper bound, since physiology is in the
+    noise too). With neither, one sample, uniform.
+
+    Args:
+        index: The fiducial's integer sample indices, or ``None``.
+        fs: Sampling rate (Hz).
+        frame_samples: The frame (samples), if the signal is framed.
+        pat_noise_s: Beat-to-beat PAT noise (SD, s), for the jitter model.
+        other_sd_s: SD of the other fiducial's error (s), removed from ``pat_noise_s``.
+        lock_ratio_min: Lock ratio from which the fiducial counts as on the frame grid.
+        ibi_range: ``(low, high)`` plausible interval (samples) for the lock test.
+
+    Returns:
+        An error spec: ``kind`` (``"uniform"`` or ``"normal"``), its width (``low_s``/``high_s``) or ``sd_s``,
+        ``resolution_s``, ``rounding`` (``"frame"``, ``"jitter"`` or ``"nearest"``) and ``basis`` (how it
+        was decided). Pass it as ``ppg_error`` to :func:`pat_measurement_model`.
+    """
     from .frames import interval_lock
 
     lock = None
@@ -104,33 +119,48 @@ def pat_measurement_model(m: EcgPpgDelay, *, ecg_fs: float, ppg_fs: float,
                           ppg_t: np.ndarray | None = None, ppg_frame_clock_ppm: float | None = None,
                           ppg_frame_lock: float | None = None, ppg_error: dict | None = None,
                           extra: dict | None = None) -> dict:
-    """The PAT measurement model of one recording as a JSON-ready dict (schema :data:`SCHEMA`).
+    """The PAT measurement model of one recording, as a JSON-ready record.
 
-    ``m``                    the fitted delay model.
-    ``ecg_fs``, ``ppg_fs``   nominal sampling rates (Hz).
-    ``*_fiducial``           names of the fiducials (e.g. "R peak", "max upstroke, 0.5-8 Hz").
-    ``*_resolution_s``       their effective time resolution; default one sample. A fiducial taken on raw
-                             samples of a framed signal can have the frame's resolution: check it with
-                             :func:`~physiosync.fiducial_resolution` / :func:`~physiosync.locking`.
-    ``*_rounding``           how a fiducial's time relates to the true event: "nearest", "floor" or "ceil".
-    ``residual_sd_s``        SD of the sync error after correction, per tier ("A", "B", "C"); default
-                             :data:`DEFAULT_RESIDUAL_FRAC` times the frame.
-    ``adopted_pat_sd_s``     uncertainty of the adopted mean PAT the offset snaps to (a recording term).
-    ``hardware_half_widths_s`` further recording-level uncertainties, e.g. from profiling the hardware
-                             ({"arrival": 0.002, "deviation": 0.008}), each U(-w, w).
-    ``unresolved_end``       an end tooth where a slip was due but none was seen and the sawtooth was not
-                             shown absent: "hold" (the sawtooth stopped somewhere in the first tooth
-                             length: ``creep_then_hold``) or "sawtooth" (it went on: unknown phase).
-    ``r_t``, ``ppg_t``       the beat-matched fiducial times the model was fitted on: to estimate the
-                             beat noise.
-    ``ppg_frame_clock_ppm``  the PPG frame clock's rate against the sampling clock, if measured
-                             (:func:`~physiosync.frame_clock`).
-    ``ppg_frame_lock``       how strongly the PPG fiducial locks to the frame grid (resultant 0-1 from
-                             :func:`~physiosync.interval_lock` / :func:`~physiosync.frame_clock`), if measured:
-                             near 0 the fiducial is not on the grid, near 1 it is.
-    ``ppg_error``            the PPG fiducial's error model for this recording, from
-                             :func:`fiducial_error_model` (overrides ``ppg_resolution_s``/``ppg_rounding``).
-    ``extra``                anything else to keep with the record.
+    The record holds what a downstream estimator needs to relate an observed PAT to the latent one: the
+    fiducials' resolution and rounding, the offset, the applied correction, the slips, and one sync-error
+    model per segment (corrected, ramp, creep-then-hold where the sawtooth stops, or unknown phase). Draw
+    from it with :func:`error_samples` and :func:`simulate_pat`; write it with :func:`dumps`.
+
+    Args:
+        m: The fit from :func:`~physiosync.fit_ecg_ppg_delay`.
+        ecg_fs: Nominal ECG sampling rate (Hz).
+        ppg_fs: Nominal PPG sampling rate (Hz).
+        ecg_fiducial: Name of the ECG fiducial, e.g. ``"R peak"``.
+        ppg_fiducial: Name of the PPG fiducial, e.g. ``"max upstroke, 0.5-8 Hz"``.
+        ecg_resolution_s: Effective time resolution of the ECG fiducial (s). Default: one sample.
+        ppg_resolution_s: Effective time resolution of the PPG fiducial (s). Default: one sample. A fiducial
+            taken on raw samples of a framed signal can have the frame's resolution: check with
+            :func:`~physiosync.fiducial_resolution` and :func:`~physiosync.locking`.
+        ecg_rounding: How the ECG fiducial's time relates to the true event: ``"nearest"``, ``"floor"`` or
+            ``"ceil"``.
+        ppg_rounding: The same for the PPG fiducial.
+        residual_sd_s: SD of the sync error left after correction, per tier (``"A"``, ``"B"``, ``"C"``; s).
+            Default: :data:`DEFAULT_RESIDUAL_FRAC` times the frame.
+        adopted_pat_sd_s: Uncertainty of the adopted mean PAT the offset snaps to (s), a recording-level term.
+        adopted_pat_basis: Where the adopted PAT came from.
+        hardware_half_widths_s: Further recording-level uncertainties, each uniform on ``(-w, w)``, e.g. from
+            profiling the hardware: ``{"arrival": 0.002, "deviation": 0.008}``.
+        unresolved_end: For an end tooth where a slip was due but none was seen and the sawtooth was not shown
+            absent: ``"hold"`` (it stopped somewhere in the first tooth length) or ``"sawtooth"`` (it went on,
+            with unknown phase).
+        r_t: R-peak times the model was fitted on (s), to estimate the beat noise.
+        ppg_t: PPG fiducial times of the same beats (s).
+        ppg_frame_clock_ppm: The PPG frame clock's rate against the sampling clock, if measured
+            (:func:`~physiosync.frame_clock`).
+        ppg_frame_lock: How strongly the PPG fiducial locks to the frame grid (resultant 0-1), if measured.
+        ppg_error: The PPG fiducial's error model from :func:`fiducial_error_model`. Overrides
+            ``ppg_resolution_s`` and ``ppg_rounding``.
+        extra: Anything else to keep with the record.
+
+    Returns:
+        A dict with schema :data:`SCHEMA` and keys ``schema``, ``t_start``, ``t_end``, ``time_base``,
+        ``clocks``, ``fiducials``, ``offset``, ``correction``, ``slips``, ``segments``, ``state_time_s``,
+        ``beat_noise``, ``recording_terms`` and ``extra``.
     """
     f = m.frame_s
     res_sd = {k: v * (f or 0.0) for k, v in DEFAULT_RESIDUAL_FRAC.items()}
@@ -272,11 +302,23 @@ def _uniform(rng: np.random.Generator, spec: dict, size) -> np.ndarray:
 
 def error_samples(rec: dict, t: np.ndarray, n: int, *, rng: np.random.Generator | None = None,
                   components: tuple[str, ...] = ("sync", "quantisation", "recording")) -> np.ndarray:
-    """Draws (n, len(t)) of observed-minus-latent corrected PAT at beat times ``t``, from the record.
+    """Draw observed-minus-latent corrected PAT at given beat times, from a record.
 
-    Components: "sync" (per segment, shared by its beats), "quantisation" (per beat), "beat_noise" (per
-    beat, if the record has it), "recording" (shared by all beats). Leave out the shared ones to get the
-    per-beat part only, e.g. to build a joint likelihood that integrates over the shared ones."""
+    Components: ``"sync"`` (per segment, shared by its beats), ``"quantisation"`` (per beat),
+    ``"beat_noise"`` (per beat, if the record has it) and ``"recording"`` (shared by all beats). Leave out
+    the shared ones to get the per-beat part only, e.g. to build a joint likelihood that integrates over the
+    shared ones.
+
+    Args:
+        rec: A record from :func:`pat_measurement_model`.
+        t: Beat times (s).
+        n: Number of draws.
+        rng: Random generator. Default: a new unseeded one.
+        components: Error components to include.
+
+    Returns:
+        An array of shape ``(n, len(t))`` (s).
+    """
     rng = rng or np.random.default_rng()
     t = np.asarray(t, dtype=np.float64)
     out = np.zeros((n, t.size))
@@ -320,8 +362,21 @@ def error_samples(rec: dict, t: np.ndarray, n: int, *, rng: np.random.Generator 
 def simulate_pat(rec: dict, t: np.ndarray, latent_pat_s: np.ndarray | float, *, n: int = 1, corrected: bool = True,
                  rng: np.random.Generator | None = None,
                  components: tuple[str, ...] = ("sync", "quantisation", "recording")) -> np.ndarray:
-    """Observed PAT (n, len(t)) for a latent PAT at beat times ``t``: corrected (as stored after physiosync's
-    correction) or raw (plus the applied shift, i.e. as the recording had it)."""
+    """Simulate the observed PAT for a latent PAT at given beat times.
+
+    Args:
+        rec: A record from :func:`pat_measurement_model`.
+        t: Beat times (s).
+        latent_pat_s: The latent PAT (s), one value or one per beat.
+        n: Number of draws.
+        corrected: ``True`` for the PAT as stored after physiosync's correction; ``False`` for the raw PAT as
+            the recording had it (the applied shift added back).
+        rng: Random generator. Default: a new unseeded one.
+        components: Error components to include (see :func:`error_samples`).
+
+    Returns:
+        Observed PAT, shape ``(n, len(t))`` (s).
+    """
     t = np.asarray(t, dtype=np.float64)
     obs = np.asarray(latent_pat_s, dtype=np.float64) + error_samples(rec, t, n, rng=rng, components=components)
     if not corrected:
@@ -333,5 +388,15 @@ def simulate_pat(rec: dict, t: np.ndarray, latent_pat_s: np.ndarray | float, *, 
 
 
 def dumps(rec: dict) -> str:
-    """The record as JSON (NaN-free)."""
+    """Serialise a record as JSON (NaN-free).
+
+    Args:
+        rec: A record from :func:`pat_measurement_model`.
+
+    Returns:
+        The JSON text.
+
+    Raises:
+        ValueError: The record contains NaN or infinity.
+    """
     return json.dumps(rec, allow_nan=False)
