@@ -82,3 +82,31 @@ def test_correction_sign_makes_opposite_steps_gaps():
     c = stamp_clock(stamps, starts, 500.0, correction_sign=-1)
     assert c["gaps"] == 2
     assert abs(c["rate_ppm"] + 65.0) < 0.5
+
+
+def test_samples_lost_at_corrections():
+    """A device that drops samples at each re-synchronisation: count time falls behind true time there."""
+    fs, rate, loss, thr = 500.0, -120e-6, 0.018, 0.5
+    n_rec, size = 90_000, 100                       # 300 min of 100-sample records
+    drop = round(loss * fs)                         # 9 samples dropped at each resync
+    true_rec, stamps, starts = [], [], []
+    t_true, k, anchor_true, anchor_k, dropped = 0.0, 0, 0.0, 0, 0
+    for _ in range(n_rec):
+        stamp = anchor_true + (k - anchor_k) / fs   # stamps follow the count from the last anchor
+        if stamp - t_true >= thr:                   # count has run ahead by the threshold: re-anchor
+            t_true += drop / fs * (1 + rate)        # the dropped samples' time passes unrecorded
+            anchor_true, anchor_k, stamp = t_true, k, t_true
+            dropped += 1
+        true_rec.append(t_true); stamps.append(stamp); starts.append(k)
+        k += size
+        t_true += size / fs * (1 + rate)
+    true_rec, stamps, starts = map(np.asarray, (true_rec, stamps, starts))
+    assert dropped >= 2
+    plain = stamp_clock(stamps, starts, fs, correction_sign=-1)
+    fixed = stamp_clock(stamps, starts, fs, correction_sign=-1, event_loss_s=loss)
+    err_plain = corrected_times(plain, starts) - true_rec
+    err_fixed = corrected_times(fixed, starts) - true_rec
+    assert np.ptp(err_plain) > 0.8 * loss                 # without it: the rate is biased and an 18 ms sawtooth stays
+    assert np.ptp(err_fixed) < 0.001
+    assert abs(fixed["rate_ppm"] - rate * 1e6) < 0.5 < abs(plain["rate_ppm"] - rate * 1e6)
+    assert len(fixed["loss_records"]) == dropped

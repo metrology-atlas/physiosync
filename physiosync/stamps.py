@@ -26,7 +26,8 @@ __all__ = ["corrected_times", "stamp_clock"]
 
 def stamp_clock(record_times: np.ndarray, record_starts: np.ndarray, fs: float, *, gap_s: float = 1.0,
                 min_step_s: float = 0.002, cluster_s: float = 300.0, min_teeth: int = 1,
-                rate_ppm: float | None = None, correction_sign: int | None = None) -> dict:
+                rate_ppm: float | None = None, correction_sign: int | None = None, event_loss_s: float = 0.0,
+                loss_min_event_s: float = 0.4) -> dict:
     """Fit one track's stamp sawtooth: a device rate error and one offset per stretch.
 
     The residual is the record stamp minus the time the sample count gives at the nominal rate. Small steps
@@ -49,6 +50,10 @@ def stamp_clock(record_times: np.ndarray, record_starts: np.ndarray, fs: float, 
         rate_ppm: Use this rate error instead of fitting one (ppm), e.g. a device's known rate.
         correction_sign: Direction of corrections (+1 or -1) when known for the device. Otherwise the
             direction of most small steps is used; steps the other way are gaps.
+        event_loss_s: Signal time lost at each large correction event (s): samples the device drops when
+            it re-synchronises, so the sample count falls behind true time by this much at every such
+            event. The stamps show the correction minus the loss. Default 0 (none).
+        loss_min_event_s: Only correction events at least this large (s) lose ``event_loss_s``.
 
     Returns:
         A dict describing the fitted clock, accepted by :func:`corrected_times`:
@@ -64,6 +69,8 @@ def stamp_clock(record_times: np.ndarray, record_starts: np.ndarray, fs: float, 
         - ``gaps``: number of real gaps.
         - ``sawtooth_p2p_s``: 1st-99th percentile spread of what is left after the fit (s).
         - ``residual_mad_s``: robust SD of what is left after the fit (s).
+        - ``event_loss_s`` and ``loss_records``: the loss per large event and the record index at which each
+          one applies (empty when ``event_loss_s`` is 0).
 
     Raises:
         ValueError: Fewer than 3 records, or ``record_times`` and ``record_starts`` differ in length.
@@ -114,6 +121,14 @@ def stamp_clock(record_times: np.ndarray, record_starts: np.ndarray, fs: float, 
             ev_at.append(i + 1)
             ev_size.append(d[i])
     ev_at, ev_size = np.asarray(ev_at, dtype=np.int64), np.asarray(ev_size)
+    # samples lost at large events: count time falls behind by event_loss_s at each one
+    lossy = np.abs(ev_size) >= loss_min_event_s if event_loss_s else np.zeros(ev_at.size, bool)
+    loss_at = ev_at[lossy]
+    n_loss = np.zeros(t.size)
+    for i in loss_at:
+        n_loss[i:] += 1
+    lost = event_loss_s * n_loss                 # true time minus count time, accumulated
+    esign = float(np.sign(correction_sign)) if correction_sign is not None else (np.sign(np.sum(ev_size)) if ev_size.size else 0.0)
     # whole teeth: from one event to the next in the same stretch; the second event corrects the drift
     # accumulated over the tooth, so rate = sum(size) / sum(duration)
     tooth = (np.diff(seg[ev_at]) == 0) if ev_at.size > 1 else np.zeros(0, bool)
@@ -121,21 +136,23 @@ def stamp_clock(record_times: np.ndarray, record_starts: np.ndarray, fs: float, 
     if rate_ppm is not None:
         b, source = rate_ppm * 1e-6, "given"
     elif dur.size >= min_teeth:
-        b, source = float(np.sum(ev_size[1:][tooth]) / np.sum(dur)), "teeth"
+        drift = ev_size[1:][tooth] + esign * event_loss_s * lossy[1:][tooth]   # the stamps show size; drift was larger by the loss
+        b, source = float(np.sum(drift) / np.sum(dur)), "teeth"
     else:
         n_seg = int(seg.max()) + 1
         cnt = np.bincount(seg[use], minlength=n_seg).astype(float)
         cnt[cnt == 0] = np.nan
         xm = np.bincount(seg[use], c[use], minlength=n_seg) / cnt
-        ym = np.bincount(seg[use], res[use], minlength=n_seg) / cnt
-        xs, ys = c[use] - xm[seg[use]], res[use] - ym[seg[use]]
+        ys_all = res - lost
+        ym = np.bincount(seg[use], ys_all[use], minlength=n_seg) / cnt
+        xs, ys = c[use] - xm[seg[use]], ys_all[use] - ym[seg[use]]
         den = float(np.sum(xs * xs))
         b, source = (float(np.sum(xs * ys) / den) if den > 0 else 0.0), "fit"
     n_seg = int(seg.max()) + 1
     cnt = np.bincount(seg[use], minlength=n_seg).astype(float)
-    a = np.bincount(seg[use], (res - b * c)[use], minlength=n_seg) / np.where(cnt > 0, cnt, np.nan)
+    a = np.bincount(seg[use], (res - lost - b * c)[use], minlength=n_seg) / np.where(cnt > 0, cnt, np.nan)
     a = np.where(np.isfinite(a), a, 0.0)
-    r = res - (a[seg] + b * c)
+    r = res - (a[seg] + b * c + lost)
     return {"t0": t0, "fs": float(fs), "rate_ppm": b * 1e6, "rate_source": source, "teeth": int(dur.size),
             "breaks": breaks, "offsets_s": a,
             "corrections": {"events": int(ev_at.size), "event_times_s": (t0 + c[ev_at]).tolist(),
@@ -143,7 +160,8 @@ def stamp_clock(record_times: np.ndarray, record_starts: np.ndarray, fs: float, 
                             "records": int(ci.size)},
             "gaps": int(breaks.size - 1),
             "sawtooth_p2p_s": float(np.nanpercentile(r[use], 99) - np.nanpercentile(r[use], 1)),
-            "residual_mad_s": float(1.4826 * np.nanmedian(np.abs(r[use] - np.nanmedian(r[use]))))}
+            "residual_mad_s": float(1.4826 * np.nanmedian(np.abs(r[use] - np.nanmedian(r[use])))),
+            "event_loss_s": float(event_loss_s), "loss_records": loss_at.tolist()}
 
 
 def corrected_times(clock: dict, record_starts: np.ndarray, sizes: np.ndarray | None = None) -> np.ndarray:
@@ -156,7 +174,8 @@ def corrected_times(clock: dict, record_starts: np.ndarray, sizes: np.ndarray | 
             otherwise one time per record.
 
     Returns:
-        Corrected times (s): the fitted line through the middle of the sawtooth, with ramps and steps removed.
+        Corrected times (s): the fitted line through the middle of the sawtooth, with ramps and steps removed,
+        and each large event's lost signal time added back.
     """
     k = np.asarray(record_starts, dtype=np.float64)
     fs, b = clock["fs"], clock["rate_ppm"] * 1e-6
@@ -166,6 +185,10 @@ def corrected_times(clock: dict, record_starts: np.ndarray, sizes: np.ndarray | 
     seg = np.cumsum(seg)
     c = k / fs
     rec = clock["t0"] + c * (1 + b) + clock["offsets_s"][seg]
+    loss = clock.get("event_loss_s", 0.0)
+    if loss:
+        for i in clock.get("loss_records", []):
+            rec[i:] += loss
     if sizes is None:
         return rec
     sizes = np.asarray(sizes, dtype=np.int64)
