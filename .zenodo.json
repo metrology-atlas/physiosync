@@ -1,0 +1,28 @@
+{
+  "title": "physiosync: timing corrections for multi-signal physiological recordings",
+  "upload_type": "software",
+  "description": "Timing corrections for multi-signal physiological recordings: device clocks, corrected times, clock drift, ECG-PPG delay and a clock-network adjustment. Dataset-independent; needs only numpy and scipy.",
+  "creators": [
+    {
+      "name": "Goodwin, Andrew J.",
+      "affiliation": "School of Biomedical Engineering, The University of Sydney",
+      "orcid": "0000-0002-2776-7039"
+    }
+  ],
+  "license": "mit",
+  "keywords": [
+    "clock synchronisation",
+    "clock drift",
+    "physiological signals",
+    "waveforms",
+    "timing"
+  ],
+  "access_right": "open",
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/metrology-atlas/physiosync",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ]
+}
