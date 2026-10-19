@@ -7,6 +7,7 @@ modules.
 |---|---|
 | [ecg_ppg](ecg_ppg.md) | ECG–PPG delay: beat matching, slip detection, the fitted delay model and its tiers, setup offsets |
 | [stamps](stamps.md) | Record-stamp sawtooths: one rate and one offset per stretch, corrected times |
+| [network](network.md) | Networks of clock links: loop misclosures, least-squares adjustment, normalised residuals |
 | [frames](frames.md) | Hidden frame clocks: change spectrum, lines, interval locking, the frame clock's rate |
 | [quantisation](quantisation.md) | Effective temporal resolution of fiducials: whole-sample grids, partial locking, pooling |
 | [measurement](measurement.md) | The PAT measurement record, fiducial error models, error draws and simulation |
