@@ -1,6 +1,6 @@
 [project]
 name = "physiosync"
-version = "0.0.1"
+version = "0.1.0"
 description = "Timing corrections for multi-signal physiological recordings: clock drift and ECG-PPG delay"
 license = "MIT"
 authors = [{ name = "Andrew J. Goodwin" }]
