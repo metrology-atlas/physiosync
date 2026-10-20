@@ -4,8 +4,8 @@ Timing corrections for multi-signal physiological recordings. MIT licence; needs
 
 physiosync works on times and samples you give it. It does not read file formats, and it assumes no
 particular dataset, monitor, sampling rate or frame rate. A dataset's import code can call it and store its
-results (corrected timing plus quality labels); the VitalDB connectors for TimeNet and AtriumDB are one
-example.
+results (corrected timing plus quality labels); the TimeNet VitalDB reader is one example. physiosync is part of
+the [Metrology Atlas](https://vitaldb.metrology-atlas.org) project.
 
 ## Modules
 

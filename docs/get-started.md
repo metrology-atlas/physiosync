@@ -6,7 +6,7 @@ on synthetic data, so you can paste it as is.
 ## Install
 
 ```bash
-pip install git+https://github.com/meshlab/physiosync
+pip install git+https://github.com/metrology-atlas/physiosync
 ```
 
 ## Simulate a recording

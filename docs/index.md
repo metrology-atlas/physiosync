@@ -34,7 +34,7 @@ timing plus quality labels); the VitalDB connectors for TimeNet and AtriumDB are
 ## Install
 
 ```bash
-pip install git+https://github.com/meshlab/physiosync      # numpy and scipy only
+pip install git+https://github.com/metrology-atlas/physiosync      # numpy and scipy only
 ```
 
 [Beat pairing](how-to/pair-beats.md) also needs the optional `hrvmatch` package.
