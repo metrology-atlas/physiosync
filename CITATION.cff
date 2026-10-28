@@ -16,3 +16,15 @@ keywords:
   - "physiological signals"
   - "waveforms"
   - "timing"
+preferred-citation:
+  type: article
+  title: "The Metrology Atlas: describing recorded physiological data as a measurement system, with VitalDB as a first application"
+  authors:
+    - family-names: Goodwin
+      given-names: "Andrew J."
+      affiliation: "School of Biomedical Engineering, The University of Sydney"
+      orcid: "https://orcid.org/0000-0002-2776-7039"
+  year: 2026
+  journal: "arXiv"
+  doi: "10.48550/arXiv.2610.29001"
+  url: "https://arxiv.org/abs/2610.29001"
