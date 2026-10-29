@@ -15,3 +15,5 @@ modules.
 | [chains](chains.md) | Rate-consistent slip chains: a lower-confidence label track |
 | [pairing](pairing.md) | Rhythm-based beat pairing (optional hrvmatch) |
 | [reference](reference.md) | Published PAT values for choosing the adopted mean PAT |
+| [timemap](timemap.md) | Time maps between recorded and corrected time: periodic, drifting and tabulated components, lead offsets |
+| [release](release.md) | Reading a checksummed correction release: corrected times, Monte Carlo realisations, the three-way run |

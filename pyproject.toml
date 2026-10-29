@@ -1,7 +1,7 @@
 [project]
 name = "physiosync"
-version = "0.1.0"
-description = "Timing corrections for multi-signal physiological recordings: clock drift and ECG-PPG delay"
+version = "0.2.0"
+description = "Timing corrections for physiological recordings: clock drift, ECG-PPG delay and time maps"
 license = "MIT"
 authors = [{ name = "Andrew J. Goodwin" }]
 requires-python = ">=3.10"

@@ -19,6 +19,7 @@ timing plus quality labels); the VitalDB connectors for TimeNet and AtriumDB are
 | A fiducial may sit on a coarser grid than one sample (frames, buffers, hum) | The effective resolution, partial locking, the frame clock's rate | [Check fiducial resolution](how-to/fiducial-resolution.md) |
 | A PAT estimator needs to know how wrong each observed PAT can be | A JSON measurement record, error draws and flat labels | [Build a measurement record](how-to/measurement-and-labels.md) |
 | The ECG–PPG delay is longer than a beat | Beat pairing from the rhythm itself | [Pair beats](how-to/pair-beats.md) |
+| A recording's time base was distorted and a fitted correction has been released | Corrected times per lead and Monte Carlo realisations with the stated uncertainty | [Use a correction release](how-to/use-a-release.md) |
 
 ## Design rules
 

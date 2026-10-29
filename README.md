@@ -21,6 +21,8 @@ Paper: Goodwin, A. J. (2026). *The Metrology Atlas: describing recorded physiolo
 | `chains` | Rate-consistent slip chains: with a recording's rate known, slips are chained one tooth length apart and each chained tooth becomes a label on a separate, lower-confidence track (`chain_slips`, `chain_labels`). |
 | `stamps` | Record time stamps that follow a device's sample clock between occasional corrections: fits the rate (from whole correction-to-correction teeth, a line through the stamp staircase, or a given rate) and one offset per stretch between gaps, and places every sample on that line, removing the stamp sawtooth (`stamp_clock`, `corrected_times`). What remains between two devices is a constant offset for a shared reference to supply. |
 | `reference` | Published pulse arrival times by study, hardware and clocking, to help choose the adopted mean PAT (`pat_reference`). |
+| `timemap` | Time maps between recorded and corrected time for a distorted time base: periodic, drifting-period and tabulated (clock-drift) components and a constant offset per lead, inverted exactly (`TimeMap`, `PeriodicWarp`, `DriftingPeriodic`, `TabulatedOffset`). Stored as plain JSON. |
+| `release` | Reads a checksummed correction release (one JSON file per record, for example the MIT-BIH release built by `mitbih-chain`): corrected times per lead, reproducible Monte Carlo realisations from bootstrap parameter sets and seeded draws, and `run`, which reports an analysis on recorded, corrected and realised times with its standard uncertainty (`load_release`, `RecordCorrection`). |
 
 ## Design rules
 
