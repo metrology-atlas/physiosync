@@ -1072,6 +1072,15 @@ def _anchored_fit(sign: int, anchors: list[float], ctx: dict, prior: tuple, g0: 
     spread = ANCHOR_SPREAD if L_how != "drift" else 0.15
     ctx = {**ctx, "sc": ctx["sc_by_sign"][sign]}
     anchors = sorted(anchors)
+    half = None
+    if L_how == "slip spacing" and ctx.get("anchor_check", "on") == "on" and len(anchors) >= 2:
+        # the midpoint of the two closest slips, judged and reported only: on injected sawteeth it judged a missed
+        # slip "no slip" again and could not be judged at gaps, so it neither rejects nor halves the tooth
+        i = int(np.argmin(np.diff(anchors)))
+        a0, a1 = anchors[i], anchors[i + 1]
+        mid = 0.5 * (a0 + a1)
+        hr = _judge_at(mid, min(_win_for(0.5 * L0), 0.15 * L0), sign, ctx)
+        half = {"t_pred": round(mid, 2), "outcome": hr["outcome"], "spacing_s": round(a1 - a0, 1)}
     conf = list(anchors)
     rows = {}
 
@@ -1119,9 +1128,12 @@ def _anchored_fit(sign: int, anchors: list[float], ctx: dict, prior: tuple, g0: 
         if r_["outcome"] in ("slip", "step, cannot judge", "step, shape unclear") and not r_.get("anchor"):
             _place_row(r_, sign, ctx)
     L = L_now()
+    # two confirmed slips give a tooth but not enough to correct the creep: the steps are corrected, the tooth and
+    # its creep reported (a tooth from two slips was wrong in 9 of 22 injected recordings)
+    creep = "corrected" if n_conf >= 3 or ctx.get("anchor_check", "on") != "on" else "reported"
     return {"sign": sign, "L": L, "L_search": L0, "rate_ppm": FRAME / L * 1e6, "confirmed": n_conf, "rows": out_rows,
             "source": f"anchored ({L_how})", "runs": 1, "clear_no": sum(r_["outcome"] == "no slip" for r_ in out_rows),
-            "e": None}
+            "e": None, "creep": creep, "half_check": half}
 
 
 def _find_slips(r_scan: np.ndarray, F: dict, Q: dict, pref: str, opts, art: np.ndarray | None = None) -> dict:
@@ -1148,6 +1160,7 @@ def _find_slips(r_scan: np.ndarray, F: dict, Q: dict, pref: str, opts, art: np.n
            "rule": opts.rule_params, "sd": {j: _noise_sd(F[j] - r) for j in FIDS}, "grid_veto": opts.grid_veto,
            "good": good, "art": art if (opts.evidence == "on" and art is not None and np.isfinite(art).mean() > 0.3) else None}
     ctx["evidence"] = opts.evidence
+    ctx["anchor_check"] = getattr(opts, "anchor_check", "on")
     ctx["sc_by_sign"] = {s: _step_scores(t_pt, y, sd, s, phi) for s in (1, -1)}
     ctx["strong"] = {s: _strong_steps(t_pt, y, sd, s, ctx["sc_by_sign"][s]) for s in (1, -1)}
     g0, g1 = float(t_pt[0]), float(t_pt[-1])
@@ -1225,7 +1238,8 @@ def _find_slips(r_scan: np.ndarray, F: dict, Q: dict, pref: str, opts, art: np.n
                 out["anchored"] = {"sign": s_, "anchors": len(anc), "confirmed": af["confirmed"], "L": af["L"], "tooth_from": how,
                                    "drift_ppm": round(cr, 1) if cr is not None else None}
                 out["direction"] = "up" if s_ > 0 else "down"
-                out["fit"] = {k: af.get(k) for k in ("L", "L_search", "rate_ppm", "confirmed", "source", "runs", "clear_no")}
+                out["fit"] = {k: af.get(k) for k in ("L", "L_search", "rate_ppm", "confirmed", "source", "runs", "clear_no",
+                                                     "creep", "half_check")}
                 anc_t = {round(a, 3) for a in anc}
                 extra = [o for o in extra if not (o["sign"] == s_ and round(o["t"], 3) in anc_t)]
                 break
@@ -1307,6 +1321,9 @@ class SlipOptions:
         prior_by_sign: The setup's tooth by direction, ``{+1: (lo_s, hi_s, n, median_s), -1: ...}``; empty: none.
         anchored: ``"on"`` searches from confirmed slips at the recording's own tooth when no sawtooth is fitted.
         saw_rule: ``"two confirmed"`` needs two confirmed slips for a sawtooth.
+        anchor_check: ``"on"``: a sawtooth found by the anchored search corrects its creep only with three or more
+            confirmed slips; with two, ``fit["creep"]`` is ``"reported"`` (steps corrected, tooth and creep reported).
+            ``"off"``: as in 0.3.0.
     """
 
     r: str = "template"
@@ -1320,6 +1337,7 @@ class SlipOptions:
     prior_by_sign: dict = field(default_factory=dict)
     anchored: str = "on"
     saw_rule: str = "two confirmed"
+    anchor_check: str = "on"
 
 
 def find_slips(r_t: np.ndarray, fiducials: dict, quality: dict, *, art_t: np.ndarray | None = None,
@@ -1375,8 +1393,9 @@ def tooth_tiers(R: dict) -> list[dict]:
     A tooth runs from one slip to the next (the first and last from the ends of the stretch). A: both edges confirmed
     slips. B: both edges confirmed or steps the shape cannot judge, at least one such step. C: an edge is a slip placed
     only within an interval (probability 0.5 or more; not corrected). U: unresolved (a slip with probability under 0.5
-    inside, a step against the sawtooth at an edge, or longer than 1.5 teeth, ends included). I: slips in a recording
-    without a sawtooth (each corrected as a step; the drift reported, not corrected). N: no slip.
+    inside, a step against the sawtooth at an edge, or longer than 1.5 teeth, ends included). I: steps only: slips in a
+    recording without a sawtooth (the drift reported, not corrected), or a sawtooth whose tooth rests on two confirmed
+    slips (``fit["creep"] == "reported"``: the tooth and its creep reported, not corrected). N: no slip.
 
     Args:
         R: A :func:`find_slips` result.
@@ -1386,6 +1405,7 @@ def tooth_tiers(R: dict) -> list[dict]:
     """
     g0, g1 = R["start"], R["end"]
     saw = bool(R.get("sawtooth"))
+    reported = saw and (R.get("fit") or {}).get("creep") == "reported"
     ev = _tier_events(R)
     L = (R.get("fit") or {}).get("L")
     sign = R.get("sign", 1)
@@ -1397,7 +1417,9 @@ def tooth_tiers(R: dict) -> list[dict]:
     out = []
     for a_, b_ in pairwise(edges):
         kinds = [e["kind"] for e in (a_, b_) if e["kind"] != "end"]
-        if not saw:
+        if reported:
+            tier, reason = "I", f"two confirmed slips: tooth {L / 60:.1f} min ({FRAME / L * 1e6:.1f} ppm) reported, creep not corrected"
+        elif not saw:
             dr = R.get("drift") or {}
             tier, reason = "I", ("isolated slips, no sawtooth" if dr.get("ppm") is None else
                                  f"isolated slips, no sawtooth; drift {dr['ppm']:+.1f} ppm (sd {dr['sd_ppm']:.1f}), not corrected")
@@ -1409,7 +1431,9 @@ def tooth_tiers(R: dict) -> list[dict]:
             tier, reason = "A", "edges confirmed" if len(kinds) == 2 else "edge confirmed (end of stretch)"
         inside_weak = [e for e in weak if a_["t"] < e["t"] < b_["t"]]
         other = [e for e in (a_, b_) if e["kind"] != "end" and e.get("sign", sign) != sign]
-        if saw and inside_weak:
+        if reported:
+            pass
+        elif saw and inside_weak:
             tier, reason = "U", "a slip with p {:.2f} inside".format(max(e["p"] for e in inside_weak))
         elif saw and other:
             tier, reason = "U", "edge a step the other way"
@@ -1426,8 +1450,8 @@ def delay_model(R: dict, frame_s: float = FRAME) -> dict:
 
     Each confirmed slip, and each step the shape could not judge, steps the delay by one frame its own way; in a fitted
     sawtooth the delay creeps back at frame / tooth, from a tooth before the first slip to a tooth after the last. Slips
-    placed only within an interval (tier C) are not corrected; recordings without a sawtooth get their steps only (the
-    drift is reported, not corrected).
+    placed only within an interval (tier C) are not corrected; recordings without a sawtooth, and sawteeth whose creep is only
+    reported (a tooth from two confirmed slips), get their steps only (the drift or creep reported, not corrected).
 
     Args:
         R: A :func:`find_slips` result.
@@ -1448,7 +1472,7 @@ def delay_model(R: dict, frame_s: float = FRAME) -> dict:
         if g0 < e["t"] < g1:
             cuts[float(e["t"])] = cuts.get(float(e["t"]), 0.0) + (0.0 if e["kind"] == "uncertain" else float(e["sign"]))
     lo = hi = None
-    if R.get("sawtooth") and L and real:
+    if R.get("sawtooth") and L and real and (R.get("fit") or {}).get("creep") != "reported":
         lo, hi = real[0]["t"] - L, real[-1]["t"] + L
         for x in (lo, hi):
             if g0 < x < g1:

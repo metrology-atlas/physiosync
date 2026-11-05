@@ -115,3 +115,15 @@ def test_delay_model_creep_limited_to_a_tooth_beyond_the_slips():
     dm = ps.delay_model(R)
     assert dm["edges"] == [0.0, 2000.0, 3000.0, 4000.0, 5000.0, 9000.0]
     assert dm["rates"][0] == 0.0 and dm["rates"][-1] == 0.0 and all(x > 0 for x in dm["rates"][1:4])
+
+
+def test_delay_model_two_slip_tooth_reports_its_creep():
+    R = dict(RESULT, start=0.0, end=9000.0, fit={"L": 1000.0, "creep": "reported"}, uncertain=[],
+             slips=[{"t": 3000.0, "kind": "slip", "sign": 1}, {"t": 4000.0, "kind": "slip", "sign": 1}])
+    dm = ps.delay_model(R)
+    assert dm["steps"] == [0.0, 1.0, 1.0] and dm["rates"] == [0.0] * 3
+    assert set(dm["tiers"]) == {"I"} and "creep not corrected" in dm["reasons"][0]
+
+
+def test_anchor_check_is_on_by_default():
+    assert ps.SlipOptions().anchor_check == "on"

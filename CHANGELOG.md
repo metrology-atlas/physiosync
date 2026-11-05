@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 (November 2026)
+
+- `method="rebuilt"`: a sawtooth found by the anchored search (a tooth from the spacing of confirmed slips) corrects
+  its creep only when three or more slips are confirmed. With two, the steps are corrected and the tooth and its creep
+  are reported, not corrected (`fit["creep"] == "reported"`, `EcgPpgDelay.qc["creep"]`; its teeth are tier I). On
+  the whole VitalDB release, a tooth from two slips was wrong in 9 of 22 injected sawteeth. The midpoint of the two
+  closest slips is judged and reported (`fit["half_check"]`), not used. `SlipOptions.anchor_check="off"` gives 0.3.0.
+- Slip detection is unchanged; `method="detect"` is unchanged.
+
 ## 0.3.0 (November 2026)
 
 - New module `slips`: the rebuilt frame-slip finder (`find_slips`), with the per-beat quality and pulse shapes it

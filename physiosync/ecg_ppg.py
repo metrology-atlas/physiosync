@@ -35,7 +35,8 @@ Two methods. ``method="detect"`` (the default) finds slips as above from beat ti
 uses :func:`physiosync.slips.find_slips` (the foot, upstroke and peak of each pulse, beat quality and pulse shapes,
 the arterial line where there is one; both sawtooth directions; see that module) and builds the delay from its slips
 (:func:`physiosync.slips.delay_model`): tiers A, B, C, U, I and N, every modelled step and creep applied, slips placed
-only within an interval not corrected, the drift of recordings without a sawtooth reported in ``drift``.
+only within an interval not corrected, the drift of recordings without a sawtooth reported in ``drift``, and the
+creep of a sawtooth whose tooth rests on two confirmed slips reported (``qc["creep"] == "reported"``), not corrected.
 
 Times in seconds on the ECG's clock.
 """
@@ -579,6 +580,7 @@ def _fit_rebuilt(m: EcgPpgDelay, tr: np.ndarray, tref: np.ndarray | None, fiduci
     fit = R.get("fit") or {}
     m.qc.update({"sawtooth_fitted": bool(R.get("sawtooth")), "tooth_s": fit.get("L"),
                  "recording_rate_ppm": fit.get("rate_ppm"), "tooth_from": fit.get("source"),
+                 "creep": (fit.get("creep") or "corrected") if R.get("sawtooth") else None,
                  "good_share": R.get("good_share"), "gating": R.get("gating")})
 
 

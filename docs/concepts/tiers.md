@@ -25,5 +25,6 @@ more.
 
 With `method="rebuilt"` the tiers come from `physiosync.slips.tooth_tiers`: A, both edges confirmed slips; B, an
 edge is a step the pulse shape cannot judge; C, an edge is a slip placed only within an interval (not corrected); U,
-unresolved; I, slips in a recording without a sawtooth (steps only; the drift reported, not corrected); N, no slip.
+unresolved; I, steps only: slips in a recording without a sawtooth (the drift reported, not corrected), or a
+sawtooth whose tooth rests on two confirmed slips (the tooth and its creep reported, not corrected); N, no slip.
 No tooth is demoted by `apply_min_tier`: every modelled step and creep is applied and the tier says how far to trust it.
