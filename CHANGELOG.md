@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.3 (November 2026)
+
+- `method="rebuilt"` measurement records and labels: `pat_measurement_model` and `sawtooth_labels` give one segment per
+  tooth (slip to slip, from `tooth_tiers`): A, B and C corrected, with the per-tier residual SD (still the detect
+  method's injected benchmark, stated in the record); U and I not corrected, their sync error a sawtooth of the
+  recording's rate (or its reported drift) with unknown phase; N none. `EcgPpgDelay.qc` keeps the teeth and the sign.
+- `fit_ecg_ppg_delay(method="rebuilt", slip_result=...)` applies a `find_slips` result made earlier (e.g. by a
+  whole-release run) to other beats of the same recording on the same clock; `fiducials` and `beat_quality` are then
+  not needed.
+
 ## 0.3.2 (November 2026)
 
 - `method="rebuilt"`: the correction is rebuilt after an end-to-end check against the arterial line (finger minus

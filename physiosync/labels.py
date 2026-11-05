@@ -20,7 +20,8 @@ the analysed stretch) and carries:
   (uniform, ``*_error_ms`` wide; e.g. a fiducial that locks to the frame grid) or "jitter" (normal,
   ``*_error_ms`` SD; e.g. an interpolated fiducial), with its basis; the PPG sampling period and frame, and
   how strongly the PPG fiducial locks to the frame grid (resultant and ratio to control periods).
-* **confidence**: the tier (A/B/C corrected, N no sawtooth, U unresolved) and its reason; the remaining
+* **confidence**: the tier (A/B/C corrected, N no sawtooth, U unresolved; with ``method="rebuilt"`` also I, slips
+  reported but not corrected, and U is not corrected either) and its reason; the remaining
   sync error, by drawing from the interval's error model (:func:`~physiosync.error_samples`): mean
   (``sync_bias_ms``), SD and 95th percentile of its size; the SD the two fiducials' errors add to the PAT (``fiducial_sd_ms``); the beat-to-
   beat noise; and ``usable_for_pat``: the tier is one the caller accepts and, if a limit is given, the

@@ -132,3 +132,24 @@ def test_unresolved_teeth_are_held_flat():
 
 def test_anchor_check_is_on_by_default():
     assert ps.SlipOptions().anchor_check == "on"
+
+
+def test_stored_result_gives_the_same_correction():
+    r, fid, q, _ = recording(hours=0.6, seed=4)
+    m = fit(r, fid, q)
+    R = ps.find_slips(r, fid, q)
+    m2 = ps.fit_ecg_ppg_delay(r, fid["up"], adopted_pat_s=0.25, method="rebuilt", slip_result=R)
+    t = np.linspace(r[0], r[-1], 500)
+    assert np.max(np.abs(m.shift(t) - m2.shift(t))) < 1e-9
+
+
+def test_rebuilt_measurement_record_and_labels():
+    r = np.arange(0.0, 4000.0, 0.8)
+    R = {"start": 0.0, "end": 3999.0, "sawtooth": True, "sign": 1, "fit": {"L": 1000.0}, "uncertain": [],
+         "slips": [{"t": 300.0, "kind": "slip", "sign": 1}, {"t": 3800.0, "kind": "slip", "sign": 1}]}
+    m = ps.fit_ecg_ppg_delay(r, r + 0.3, adopted_pat_s=0.25, method="rebuilt", slip_result=R)
+    rec = ps.pat_measurement_model(m, ecg_fs=500, ppg_fs=500, ecg_fiducial="R", ppg_fiducial="up")
+    labels = ps.sawtooth_labels(rec)
+    assert [x["tier"] for x in labels] == ["A", "U", "A"]           # one label per tooth, slip to slip
+    assert labels[1]["sync_error_model"] == "sawtooth_unknown_phase" and labels[1]["shift_slope_ppm"] == 0.0
+    assert labels[0]["sync_error_model"] == "corrected" and labels[0]["slope_ppm"] == pytest.approx(33.33, abs=0.01)

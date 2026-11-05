@@ -48,7 +48,7 @@ from itertools import pairwise
 
 import numpy as np
 
-from .slips import FRAME, SlipOptions, delay_model, find_slips
+from .slips import FRAME, SlipOptions, delay_model, find_slips, tooth_tiers
 
 ORDER = "ABCNU"  # tiers, best first
 
@@ -401,7 +401,7 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
                       ref_t: np.ndarray | None = None, ref_max_step_s: float = 0.010,
                       predict_slips: bool = True, offset_s: float | None = None, method: str = "detect",
                       fiducials: dict | None = None, beat_quality: dict | None = None,
-                      slip_options: SlipOptions | None = None) -> EcgPpgDelay:
+                      slip_options: SlipOptions | None = None, slip_result: dict | None = None) -> EcgPpgDelay:
     """Fit the PPG delay model from R-peak and PPG fiducial times on the same clock.
 
     Pairs the beats (unless ``matched``), detects slips, measures each tooth's creep rate, sets the offset
@@ -443,6 +443,9 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
         beat_quality: ``method="rebuilt"``: :func:`physiosync.slips.beat_quality` for the same beats.
         slip_options: ``method="rebuilt"``: :class:`physiosync.slips.SlipOptions` (e.g. the setup's tooth in
             ``prior_by_sign``). Default: the evaluated method.
+        slip_result: ``method="rebuilt"``: a :func:`physiosync.slips.find_slips` result already made for this
+            recording, on the same clock (e.g. stored by a whole-release run); then ``fiducials`` and
+            ``beat_quality`` are not needed, and the beats given only set the offset and the diagnostics.
 
     Returns:
         The fitted :class:`EcgPpgDelay`.
@@ -456,7 +459,7 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
     ref = None if ref_t is None else np.asarray(ref_t, dtype=np.float64)
     if ref is not None and ref.shape != r_t.shape:
         raise ValueError("ref_t needs one value (or NaN) per R-peak of r_t")
-    if method == "rebuilt" and not matched:
+    if method == "rebuilt" and not matched and slip_result is None:
         raise ValueError("method='rebuilt' needs matched=True: r_t, ppg_t, fiducials and beat_quality per beat")
     if matched:
         if r_t.shape != ppg_t.shape:
@@ -475,7 +478,7 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
     if method == "rebuilt":
         m.method = "rebuilt"
         if sawtooth:
-            _fit_rebuilt(m, tr, tref, fiducials, beat_quality, slip_options, frame_s)
+            _fit_rebuilt(m, tr, tref, fiducials, beat_quality, slip_options, frame_s, slip_result)
         fin = np.isfinite(pat)  # the slips are found from every beat; the offset from beats with a PPG time
         if fin.sum() < 10:
             raise ValueError("too few beats with a PPG time")
@@ -554,16 +557,20 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
 
 
 def _fit_rebuilt(m: EcgPpgDelay, tr: np.ndarray, tref: np.ndarray | None, fiducials: dict | None,
-                 beat_quality: dict | None, slip_options: SlipOptions | None, frame_s: float | None) -> None:
-    """Fill ``m`` from :func:`physiosync.slips.find_slips` and :func:`physiosync.slips.delay_model`."""
-    if fiducials is None or beat_quality is None:
-        raise ValueError("method='rebuilt' needs fiducials and beat_quality")
+                 beat_quality: dict | None, slip_options: SlipOptions | None, frame_s: float | None,
+                 slip_result: dict | None = None) -> None:
+    """Fill ``m`` from :func:`physiosync.slips.find_slips` (or a stored result) and :func:`physiosync.slips.delay_model`."""
     if frame_s is not None and abs(frame_s - FRAME) > 1e-9:
         raise ValueError(f"method='rebuilt' is calibrated for a {FRAME * 1e3:.1f} ms frame, not {frame_s * 1e3:.1f} ms")
-    for k, v in fiducials.items():
-        if np.shape(v) != tr.shape:
-            raise ValueError(f"fiducials[{k!r}] needs one value per matched beat")
-    R = find_slips(tr, fiducials, beat_quality, art_t=tref, opts=slip_options)
+    if slip_result is not None:
+        R = slip_result
+    else:
+        if fiducials is None or beat_quality is None:
+            raise ValueError("method='rebuilt' needs fiducials and beat_quality (or a slip_result)")
+        for k, v in fiducials.items():
+            if np.shape(v) != tr.shape:
+                raise ValueError(f"fiducials[{k!r}] needs one value per matched beat")
+        R = find_slips(tr, fiducials, beat_quality, art_t=tref, opts=slip_options)
     dm = delay_model(R, FRAME)
     m.frame_s = FRAME
     m.t_start, m.t_end = float(R["start"]), float(R["end"])
@@ -581,7 +588,9 @@ def _fit_rebuilt(m: EcgPpgDelay, tr: np.ndarray, tref: np.ndarray | None, fiduci
     m.qc.update({"sawtooth_fitted": bool(R.get("sawtooth")), "tooth_s": fit.get("L"),
                  "recording_rate_ppm": fit.get("rate_ppm"), "tooth_from": fit.get("source"),
                  "creep": (fit.get("creep") or "corrected") if R.get("sawtooth") else None,
-                 "good_share": R.get("good_share"), "gating": R.get("gating")})
+                 "good_share": R.get("good_share"), "gating": R.get("gating"), "sign": R.get("sign", 1),
+                 # the teeth (slip to slip) with their tiers, for the measurement record and labels
+                 "teeth": [{k: (float(v) if k in ("t0", "t1") else v) for k, v in x.items()} for x in tooth_tiers(R)]})
 
 
 def setup_offsets(levels: dict, setups: dict, *, adopted_pat_s: float, min_recordings: int = 3,

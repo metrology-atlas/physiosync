@@ -126,6 +126,9 @@ def pat_measurement_model(m: EcgPpgDelay, *, ecg_fs: float, ppg_fs: float,
     model per segment (corrected, ramp, creep-then-hold where the sawtooth stops, or unknown phase). Draw
     from it with :func:`error_samples` and :func:`simulate_pat`; write it with :func:`dumps`.
 
+    With a ``method="rebuilt"`` fit there is one segment per tooth (slip to slip, ``m.qc["teeth"]``): A, B and C
+    corrected; U and I not corrected, their sync error a sawtooth of the recording's rate and unknown phase; N none.
+
     Args:
         m: The fit from :func:`~physiosync.fit_ecg_ppg_delay`.
         ecg_fs: Nominal ECG sampling rate (Hz).
@@ -164,7 +167,8 @@ def pat_measurement_model(m: EcgPpgDelay, *, ecg_fs: float, ppg_fs: float,
     """
     f = m.frame_s
     res_sd = {k: v * (f or 0.0) for k, v in DEFAULT_RESIDUAL_FRAC.items()}
-    res_src = "physiosync injected benchmark (fraction of the frame)"
+    res_src = ("physiosync injected benchmark of the detect method (fraction of the frame); not measured for the rebuilt "
+               "method" if getattr(m, "method", "detect") == "rebuilt" else "physiosync injected benchmark (fraction of the frame)")
     if residual_sd_s:
         res_sd.update(residual_sd_s)
         res_src = "caller"
@@ -191,61 +195,64 @@ def pat_measurement_model(m: EcgPpgDelay, *, ecg_fs: float, ppg_fs: float,
         how = "predicted" if x in pred else "inserted" if x in m.inserted_t else "detected"
         return how + ("+reference" if x in conf_ref else "")
 
-    segs = []
-    for k in range(n):
-        a, b = float(edges[k]), float(edges[k + 1])
-        tier = tiers[k]
-        applied = tier in ("A", "B", "C") and m.applied(k)
-        slip_a, slip_b = k > 0, k < n - 1
-        own = float(m.tooth_rate[k]) if k < len(m.tooth_rate) and m.tooth_rate[k] > 0 else None
-        # a tooth that was not corrected: the recording's own rate (an end tooth's rate is capped, and
-        # means nothing where the sawtooth stopped), else the setup's, else its own
-        rate = own if applied else (rec_rate or (prior * 1e-6 if prior else None) or own)
-        d0 = float(m.shift(np.array([a + eps]))[0])
-        d1 = float(m.shift(np.array([b - eps]))[0])
-        seg = {"start": a, "end": b, "tier": tier, "applied": applied, "reason": reasons[k],
-               "slip_at_start": slip_a, "slip_at_end": slip_b,
-               "inserted_slip_at_start": slip_a and a in m.inserted_t, "inserted_slip_at_end": slip_b and b in m.inserted_t,
-               "state": "active" if applied else {"N": "paused", "U": "unknown"}.get(tier, "active"),
-               # the correction that was applied: D(t) = d0 - slope (t - start), on top of the raw PAT
-               "applied_shift": {"d0_s": d0, "slope": (d0 - d1) / max(b - a - 2 * eps, eps)},
-               "sawtooth": {"frame_s": f, "rate": rate, "tooth_s": (f / rate) if f and rate else None,
-                            "rate_source": m.tooth_source[k] if k < len(m.tooth_source) else None}}
-        top = float(full_saw(a + eps)[0]) - saw_med   # just after a slip at a (relative to the applied level)
-        bottom = float(full_saw(b - eps)[0]) - saw_med  # just before a slip at b
-        if applied:
-            err = {"kind": "corrected", "sd_s": res_sd.get(tier)}
-        elif not m.sawtooth or f is None or tier == "N" and not slip_a and not slip_b:
-            err = {"kind": "none"}
-        elif tier == "N" or (tier == "U" and "slip was due" in reasons[k] and unresolved_end == "hold"):
-            if rate is None:
+    if getattr(m, "method", "detect") == "rebuilt":
+        segs = _rebuilt_segments(m, res_sd, r_t, ppg_t)
+    else:
+        segs = []
+        for k in range(n):
+            a, b = float(edges[k]), float(edges[k + 1])
+            tier = tiers[k]
+            applied = tier in ("A", "B", "C") and m.applied(k)
+            slip_a, slip_b = k > 0, k < n - 1
+            own = float(m.tooth_rate[k]) if k < len(m.tooth_rate) and m.tooth_rate[k] > 0 else None
+            # a tooth that was not corrected: the recording's own rate (an end tooth's rate is capped, and
+            # means nothing where the sawtooth stopped), else the setup's, else its own
+            rate = own if applied else (rec_rate or (prior * 1e-6 if prior else None) or own)
+            d0 = float(m.shift(np.array([a + eps]))[0])
+            d1 = float(m.shift(np.array([b - eps]))[0])
+            seg = {"start": a, "end": b, "tier": tier, "applied": applied, "reason": reasons[k],
+                   "slip_at_start": slip_a, "slip_at_end": slip_b,
+                   "inserted_slip_at_start": slip_a and a in m.inserted_t, "inserted_slip_at_end": slip_b and b in m.inserted_t,
+                   "state": "active" if applied else {"N": "paused", "U": "unknown"}.get(tier, "active"),
+                   # the correction that was applied: D(t) = d0 - slope (t - start), on top of the raw PAT
+                   "applied_shift": {"d0_s": d0, "slope": (d0 - d1) / max(b - a - 2 * eps, eps)},
+                   "sawtooth": {"frame_s": f, "rate": rate, "tooth_s": (f / rate) if f and rate else None,
+                                "rate_source": m.tooth_source[k] if k < len(m.tooth_source) else None}}
+            top = float(full_saw(a + eps)[0]) - saw_med   # just after a slip at a (relative to the applied level)
+            bottom = float(full_saw(b - eps)[0]) - saw_med  # just before a slip at b
+            if applied:
+                err = {"kind": "corrected", "sd_s": res_sd.get(tier)}
+            elif not m.sawtooth or f is None or tier == "N" and not slip_a and not slip_b:
+                err = {"kind": "none"}
+            elif tier == "N" or (tier == "U" and "slip was due" in reasons[k] and unresolved_end == "hold"):
+                if rate is None:
+                    err = {"kind": "uniform_beat", "half_width_s": f / 2}
+                elif slip_a and not slip_b:
+                    err = {"kind": "creep_then_hold", "e0_s": top, "rate": rate, "tau_max_s": f / rate}
+                elif slip_b and not slip_a:
+                    err = {"kind": "hold_then_creep", "e1_s": bottom, "rate": rate, "tau_max_s": f / rate}
+                else:  # paused between two slips: creep from the first, hold, creep to the second (each part unknown)
+                    err = {"kind": "creep_then_hold", "e0_s": top, "rate": rate, "tau_max_s": f / rate}
+            elif tier in ("A", "B", "C"):
+                # corrected by the model but below the threshold: the model's ramp, with its tier's error
+                err = {"kind": "ramp", "e0_s": top if slip_a else float(full_saw(a + eps)[0]) - saw_med,
+                       "rate": float(m.tooth_rate[k]), "sd_s": res_sd.get(tier)}
+            elif rate is not None:
+                err = {"kind": "sawtooth_unknown_phase", "frame_s": f, "rate": rate}
+                if slip_a:   # the phase is known at the slip: it is the top of a tooth
+                    err = {"kind": "ramp_wrapped", "e0_s": top, "rate": rate, "frame_s": f}
+            else:
                 err = {"kind": "uniform_beat", "half_width_s": f / 2}
-            elif slip_a and not slip_b:
-                err = {"kind": "creep_then_hold", "e0_s": top, "rate": rate, "tau_max_s": f / rate}
-            elif slip_b and not slip_a:
-                err = {"kind": "hold_then_creep", "e1_s": bottom, "rate": rate, "tau_max_s": f / rate}
-            else:  # paused between two slips: creep from the first, hold, creep to the second (each part unknown)
-                err = {"kind": "creep_then_hold", "e0_s": top, "rate": rate, "tau_max_s": f / rate}
-        elif tier in ("A", "B", "C"):
-            # corrected by the model but below the threshold: the model's ramp, with its tier's error
-            err = {"kind": "ramp", "e0_s": top if slip_a else float(full_saw(a + eps)[0]) - saw_med,
-                   "rate": float(m.tooth_rate[k]), "sd_s": res_sd.get(tier)}
-        elif rate is not None:
-            err = {"kind": "sawtooth_unknown_phase", "frame_s": f, "rate": rate}
-            if slip_a:   # the phase is known at the slip: it is the top of a tooth
-                err = {"kind": "ramp_wrapped", "e0_s": top, "rate": rate, "frame_s": f}
-        else:
-            err = {"kind": "uniform_beat", "half_width_s": f / 2}
-        seg["sync_error"] = err
-        seg["slip_evidence"] = {"start": evidence(a, slip_a), "end": evidence(b, slip_b)}
-        if r_t is not None and ppg_t is not None:
-            sel = (np.asarray(r_t) >= a) & (np.asarray(r_t) < b)
-            cp = (m.correct(np.asarray(ppg_t, dtype=np.float64)[sel]) - np.asarray(r_t, dtype=np.float64)[sel])
-            dp = np.diff(cp[np.isfinite(cp)])
-            seg["beat_noise_s"] = (float(1.4826 * np.median(np.abs(dp - np.median(dp))) / np.sqrt(2))
-                                   if dp.size > 10 else None)
-            seg["beats"] = int(sel.sum())
-        segs.append(seg)
+            seg["sync_error"] = err
+            seg["slip_evidence"] = {"start": evidence(a, slip_a), "end": evidence(b, slip_b)}
+            if r_t is not None and ppg_t is not None:
+                sel = (np.asarray(r_t) >= a) & (np.asarray(r_t) < b)
+                cp = (m.correct(np.asarray(ppg_t, dtype=np.float64)[sel]) - np.asarray(r_t, dtype=np.float64)[sel])
+                dp = np.diff(cp[np.isfinite(cp)])
+                seg["beat_noise_s"] = (float(1.4826 * np.median(np.abs(dp - np.median(dp))) / np.sqrt(2))
+                                       if dp.size > 10 else None)
+                seg["beats"] = int(sel.sum())
+            segs.append(seg)
     beat_sd = None
     if r_t is not None and ppg_t is not None:
         r_t = np.asarray(r_t, dtype=np.float64)
@@ -273,9 +280,13 @@ def pat_measurement_model(m: EcgPpgDelay, *, ecg_fs: float, ppg_fs: float,
                            "then not kept) unless supplied by the caller, e.g. per setup",
                    "saw_median_s": saw_med, "level_from": m.qc.get("offset_basis", "all beats"),
                    "raw_level_s": m.qc.get("raw_level_s")},
-        "correction": {"mode": "per-tooth (each tooth balances one frame)", "apply_min_tier": m.apply_min_tier,
+        "correction": {"mode": ("rebuilt (physiosync.slips.delay_at: each tooth closes on its own slips; U and I not "
+                                "corrected)") if getattr(m, "method", "detect") == "rebuilt"
+                       else "per-tooth (each tooth balances one frame)", "apply_min_tier": m.apply_min_tier,
                        "residual_sd_s": res_sd, "residual_source": res_src, "unresolved_end": unresolved_end},
-        "slips": {"t": [float(x) for x in m.tooth_edges[1:-1]], "detected_t": m.slips_t, "inserted_t": m.inserted_t,
+        "slips": {"t": (list(m.slips_t) if getattr(m, "method", "detect") == "rebuilt" else [float(x) for x in m.tooth_edges[1:-1]]),
+                  "detected_t": m.slips_t, "inserted_t": m.inserted_t,
+                  "uncertain": [{k: u.get(k) for k in ("q05", "q50", "q95", "p_slip")} for u in getattr(m, "uncertain", [])],
                   "predicted_t": m.qc.get("predicted_t", []), "confirmed_by_reference_t": m.qc.get("confirmed_by_reference_t", []),
                   "rejected_t": m.qc.get("rejected_t", []), "physiological_t": m.qc.get("physiological_t", [])},
         "segments": segs,
@@ -284,6 +295,59 @@ def pat_measurement_model(m: EcgPpgDelay, *, ecg_fs: float, ppg_fs: float,
         "recording_terms": rec_terms,
         "extra": extra or {},
     }
+
+
+def _rebuilt_segments(m: EcgPpgDelay, res_sd: dict, r_t, ppg_t) -> list[dict]:
+    """One segment per tooth of a ``method="rebuilt"`` fit (``m.qc["teeth"]``), with its sync-error model.
+
+    A, B and C were corrected: N(0, sd) per tier. U and I were not: the delay is a sawtooth of the recording's rate
+    (frame / tooth; for slips without a sawtooth, its reported drift, or none) of unknown phase against the level
+    the correction left. N: no slip, nothing to correct.
+    """
+    f = m.frame_s or 1 / 30
+    eps = 1e-6
+    sign = m.qc.get("sign", 1) or 1
+    L = m.qc.get("tooth_s")
+    teeth = m.qc.get("teeth") or [{"t0": m.t_start, "t1": m.t_end, "tier": "N", "reason": "no slip", "edges": ""}]
+    kinds = {round(float(x["t"]), 3): x.get("kind", "slip") for x in m.slips}
+    segs = []
+    for k, x in enumerate(teeth):
+        a, b, tier = float(x["t0"]), float(x["t1"]), x["tier"]
+        applied = tier in ("A", "B", "C")
+        slip_a, slip_b = k > 0, k < len(teeth) - 1
+        if m.qc.get("sawtooth_fitted") and L:
+            rate = sign * f / L
+        else:
+            dr = (m.drift or {}).get("ppm")
+            rate = sign * dr * 1e-6 if dr is not None else 0.0
+        d0 = float(m.shift(np.array([a + eps]))[0])
+        d1 = float(m.shift(np.array([b - eps]))[0])
+        if applied:
+            err = {"kind": "corrected", "sd_s": res_sd.get(tier)}
+        elif tier == "N":
+            err = {"kind": "none"}
+        else:
+            err = {"kind": "sawtooth_unknown_phase", "frame_s": f, "rate": rate}
+        seg = {"start": a, "end": b, "tier": tier, "applied": applied, "reason": x.get("reason", ""),
+               "slip_at_start": slip_a, "slip_at_end": slip_b,
+               "inserted_slip_at_start": False, "inserted_slip_at_end": False,
+               "state": "active" if tier in ("A", "B", "C", "I") else {"N": "paused", "U": "unknown"}.get(tier, "unknown"),
+               "applied_shift": {"d0_s": d0, "slope": (d0 - d1) / max(b - a - 2 * eps, eps)},
+               "sawtooth": {"frame_s": f, "rate": abs(rate) or None, "tooth_s": (f / abs(rate)) if rate else None,
+                            "rate_source": "fitted tooth" if (m.qc.get("sawtooth_fitted") and L) else
+                            ("reported drift" if rate else None)},
+               "sync_error": err,
+               "slip_evidence": {"start": kinds.get(round(a, 3)) if slip_a else None,
+                                 "end": kinds.get(round(b, 3)) if slip_b else None}}
+        if r_t is not None and ppg_t is not None:
+            sel = (np.asarray(r_t) >= a) & (np.asarray(r_t) < b)
+            cp = (m.correct(np.asarray(ppg_t, dtype=np.float64)[sel]) - np.asarray(r_t, dtype=np.float64)[sel])
+            dp = np.diff(cp[np.isfinite(cp)])
+            seg["beat_noise_s"] = (float(1.4826 * np.median(np.abs(dp - np.median(dp))) / np.sqrt(2))
+                                   if dp.size > 10 else None)
+            seg["beats"] = int(sel.sum())
+        segs.append(seg)
+    return segs
 
 
 def _seg_index(rec: dict, t: np.ndarray) -> np.ndarray:
