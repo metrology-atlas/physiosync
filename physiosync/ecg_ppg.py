@@ -34,9 +34,9 @@ records where its rate came from.
 Two methods. ``method="detect"`` (the default) finds slips as above from beat times alone. ``method="rebuilt"``
 uses :func:`physiosync.slips.find_slips` (the foot, upstroke and peak of each pulse, beat quality and pulse shapes,
 the arterial line where there is one; both sawtooth directions; see that module) and builds the delay from its slips
-(:func:`physiosync.slips.delay_model`): tiers A, B, C, U, I and N, every modelled step and creep applied, slips placed
-only within an interval not corrected, the drift of recordings without a sawtooth reported in ``drift``, and the
-creep of a sawtooth whose tooth rests on two confirmed slips reported (``qc["creep"] == "reported"``), not corrected.
+(:func:`physiosync.slips.delay_model`): tiers A, B and C corrected (each tooth closing exactly, uncertain slips as
+ramps), U not corrected, I (slips without a sawtooth, with the drift in ``drift``; or a sawtooth whose tooth rests on
+two confirmed slips, ``qc["creep"] == "reported"``) reported and not corrected.
 
 Times in seconds on the ECG's clock.
 """
@@ -272,12 +272,12 @@ class EcgPpgDelay:
 
         Returns:
             ``method="detect"``: ``True`` when the tooth's tier is at or above :attr:`apply_min_tier`.
-            ``method="rebuilt"``: the whole model is applied, so ``True`` for every tooth but N (no slip); the tier
-            then says how far to trust it.
+            ``method="rebuilt"``: ``True`` for tiers A, B and C (corrected); U and I are not corrected (see
+            :func:`physiosync.slips.delay_at`), N has nothing to correct.
         """
         t = self.tooth_tier[k] if k < len(self.tooth_tier) else "U"
         if self.method == "rebuilt":
-            return t != "N"
+            return t not in ("N", "U", "I")
         order = {"A": 0, "B": 1, "C": 2}
         return t in order and order[t] <= order.get(self.apply_min_tier, 1)
 
@@ -286,8 +286,8 @@ class EcgPpgDelay:
 
         Tier A, B or C: sawtooth corrected (high, moderate or low confidence). N: no sawtooth seen (offset only).
         U: possibly affected but not corrected (offset only). Tiers below :attr:`apply_min_tier` are reported as U.
-        ``method="rebuilt"``: tiers A, B, C, U, I (isolated slips, no sawtooth) and N as fitted, none demoted; C, U and
-        I teeth carry the steps and creep that were modelled (a slip placed only within an interval is not a step).
+        ``method="rebuilt"``: tiers A, B, C (corrected; C's uncertain slip as a ramp), U (unresolved, not corrected), I
+        (slips reported, not corrected) and N, as fitted.
 
         Returns:
             One dict per interval (ECG time, s): ``start``, ``end``, ``tier``, ``applied``, ``teeth``,
@@ -571,7 +571,7 @@ def _fit_rebuilt(m: EcgPpgDelay, tr: np.ndarray, tref: np.ndarray | None, fiduci
     m.tooth_steps = [float(x) for x in dm["steps"]]
     m.tooth_rate = [float(x) for x in dm["rates"]]
     m.tooth_tier, m.tooth_reason = list(dm["tiers"]), list(dm["reasons"])
-    m.tooth_source = ["fitted tooth" if r else "no creep" for r in m.tooth_rate]
+    m.tooth_source = ["rebuilt" if r else "none" for r in m.tooth_rate]
     m.direction = R.get("direction")
     m.slips = [dict(x) for x in R.get("slips", [])]
     m.slips_t = sorted(float(x["t"]) for x in m.slips)

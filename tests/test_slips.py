@@ -58,7 +58,7 @@ def test_rebuilt_finds_the_sawtooth_and_removes_it():
 def test_rebuilt_reversed_sawtooth():
     r, fid, q, D = recording(sign=-1, seed=1)
     m = fit(r, fid, q)
-    assert m.direction == "down" and all(s == -1 for s in m.tooth_steps if s)
+    assert m.direction == "down" and all(abs(s + 1) < 1e-3 for s in m.tooth_steps if abs(s) > 1e-3)
     assert np.percentile(err_ms(m, r, D), 95) < 1.0
 
 
@@ -94,35 +94,40 @@ RESULT = {"start": 0.0, "end": 4000.0, "sawtooth": True, "sign": 1, "fit": {"L":
           "uncertain": [{"q50": 2500.0, "p_slip": 0.7, "q05": 2400.0, "q95": 2600.0, "outcome": "uncertain"}]}
 
 
-def test_delay_model_steps_creep_and_tiers():
+def test_delay_model_steps_creep_ramp_and_tiers():
     dm = ps.delay_model(RESULT)
-    assert dm["edges"] == [0.0, 500.0, 1500.0, 2500.0, 3500.0, 4000.0]
-    assert dm["steps"] == [0.0, 1.0, 1.0, 0.0, 1.0]  # the slip placed only within an interval is not a step
-    assert dm["rates"] == pytest.approx([FRAME / 1000] * 5)
-    assert dm["tiers"] == ["A", "B", "C", "C", "A"]
+    assert dm["edges"] == [0.0, 500.0, 1500.0, 2400.0, 2500.0, 2600.0, 3500.0, 4000.0]
+    assert dm["steps"] == pytest.approx([0, 1, 1, 0, 0, 0, 1], abs=1e-6)
+    r = FRAME / 1000
+    assert dm["rates"] == pytest.approx([r, r, r, r - 0.7 * FRAME / 200, r - 0.7 * FRAME / 200, r, r], rel=1e-3)
+    assert dm["tiers"] == ["A", "B", "C", "C", "C", "C", "A"]
 
 
-def test_delay_model_isolated_slips_are_steps_only():
-    R = dict(RESULT, sawtooth=False, uncertain=[], drift={"ppm": 6.5, "sd_ppm": 2.0})
-    dm = ps.delay_model(R)
-    assert dm["steps"] == [0.0, 1.0, 1.0, 1.0] and dm["rates"] == [0.0] * 4
-    assert set(dm["tiers"]) == {"I"} and "drift +6.5 ppm" in dm["reasons"][0] and "not corrected" in dm["reasons"][0]
+def test_each_tooth_closes_exactly():
+    R = dict(RESULT, end=5000.0, uncertain=[], slips=[{"t": 1000.0, "kind": "slip", "sign": 1},
+                                                      {"t": 2050.0, "kind": "slip", "sign": 1},
+                                                      {"t": 3000.0, "kind": "slip", "sign": 1}])
+    d = ps.delay_at(np.array([1000.0, 2049.999, 2050.0, 2999.999]), R)
+    assert d[1] - d[0] == pytest.approx(-FRAME, abs=1e-6)        # a 1,050 s tooth creeps one frame
+    assert d[3] - d[2] == pytest.approx(-FRAME, abs=1e-6)        # and a 950 s one
 
 
-def test_delay_model_creep_limited_to_a_tooth_beyond_the_slips():
-    R = dict(RESULT, start=0.0, end=9000.0, slips=[{"t": 3000.0, "kind": "slip", "sign": 1},
-                                                   {"t": 4000.0, "kind": "slip", "sign": 1}], uncertain=[])
-    dm = ps.delay_model(R)
-    assert dm["edges"] == [0.0, 2000.0, 3000.0, 4000.0, 5000.0, 9000.0]
-    assert dm["rates"][0] == 0.0 and dm["rates"][-1] == 0.0 and all(x > 0 for x in dm["rates"][1:4])
+def test_isolated_slips_and_two_slip_teeth_are_not_corrected():
+    for R in (dict(RESULT, sawtooth=False, uncertain=[], drift={"ppm": 6.5, "sd_ppm": 2.0}),
+              dict(RESULT, fit={"L": 1000.0, "creep": "reported"}, uncertain=[])):
+        dm = ps.delay_model(R)
+        assert all(x == 0 for x in dm["steps"]) and all(x == 0 for x in dm["rates"])
+        assert set(dm["tiers"]) == {"I"} and "not corrected" in dm["reasons"][0]
 
 
-def test_delay_model_two_slip_tooth_reports_its_creep():
-    R = dict(RESULT, start=0.0, end=9000.0, fit={"L": 1000.0, "creep": "reported"}, uncertain=[],
-             slips=[{"t": 3000.0, "kind": "slip", "sign": 1}, {"t": 4000.0, "kind": "slip", "sign": 1}])
-    dm = ps.delay_model(R)
-    assert dm["steps"] == [0.0, 1.0, 1.0] and dm["rates"] == [0.0] * 3
-    assert set(dm["tiers"]) == {"I"} and "creep not corrected" in dm["reasons"][0]
+def test_unresolved_teeth_are_held_flat():
+    R = dict(RESULT, start=0.0, end=9000.0, uncertain=[], slips=[{"t": 3000.0, "kind": "slip", "sign": 1},
+                                                                  {"t": 4000.0, "kind": "slip", "sign": 1}])
+    tiers = {x["tier"] for x in ps.tooth_tiers(R)}
+    assert "U" in tiers
+    d = ps.delay_at(np.array([100.0, 2500.0, 3100.0, 3900.0, 5000.0, 8000.0]), R)
+    assert d[0] == d[1] and d[4] == d[5]                          # the long teeth at both ends: not corrected
+    assert d[3] - d[2] == pytest.approx(-FRAME * 0.8, abs=1e-6)   # the tooth between the slips creeps
 
 
 def test_anchor_check_is_on_by_default():

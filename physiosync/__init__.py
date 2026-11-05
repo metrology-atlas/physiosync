@@ -30,9 +30,9 @@ from .quantisation import (
 )
 from .reference import pat_reference
 from .release import RecordCorrection, Release, ReleaseError, load_release
-from .slips import SlipOptions, beat_quality, delay_model, find_slips, tooth_tiers
+from .slips import SlipOptions, beat_quality, delay_at, delay_model, find_slips, tooth_tiers
 from .stamps import corrected_times, stamp_clock
 from .timemap import DriftingPeriodic, PeriodicWarp, TabulatedOffset, TimeMap
 
-__all__ = ["CHAIN_FIELDS", "LABEL_FIELDS", "OFFSET_FIELDS", "Adjustment", "ClockNetwork", "Cycle", "DriftingPeriodic", "EcgPpgDelay", "Edge", "PeriodicWarp", "RecordCorrection", "Release", "ReleaseError", "ResolutionResult", "SlipOptions", "TabulatedOffset", "TierRules", "TimeMap", "beat_quality", "chain_labels", "chain_slips", "change_spectrum", "corrected_times", "delay_model", "detect_slips", "error_samples", "fiducial_error_model", "fiducial_resolution", "find_slips", "fit_ecg_ppg_delay", "frame_clock", "frame_lines", "indices_from_times", "interval_lock", "intervals", "load_release", "locking", "match_beats", "offset_label", "pair_beats", "pat_measurement_model", "pat_reference", "period_lock_scan", "period_scan", "pool", "sawtooth_evidence", "sawtooth_label_tuples", "sawtooth_labels", "setup_offsets", "simulate_pat", "stamp_clock", "tooth_tiers"]
-__version__ = "0.3.1"
+__all__ = ["CHAIN_FIELDS", "LABEL_FIELDS", "OFFSET_FIELDS", "Adjustment", "ClockNetwork", "Cycle", "DriftingPeriodic", "EcgPpgDelay", "Edge", "PeriodicWarp", "RecordCorrection", "Release", "ReleaseError", "ResolutionResult", "SlipOptions", "TabulatedOffset", "TierRules", "TimeMap", "beat_quality", "chain_labels", "chain_slips", "change_spectrum", "corrected_times", "delay_at", "delay_model", "detect_slips", "error_samples", "fiducial_error_model", "fiducial_resolution", "find_slips", "fit_ecg_ppg_delay", "frame_clock", "frame_lines", "indices_from_times", "interval_lock", "intervals", "load_release", "locking", "match_beats", "offset_label", "pair_beats", "pat_measurement_model", "pat_reference", "period_lock_scan", "period_scan", "pool", "sawtooth_evidence", "sawtooth_label_tuples", "sawtooth_labels", "setup_offsets", "simulate_pat", "stamp_clock", "tooth_tiers"]
+__version__ = "0.3.2"

@@ -23,8 +23,10 @@ teeth are at most C (B where the arterial reference confirmed the slips), and no
 from the ECG–PPG series alone were not real. Slips confirmed by a reference signal (`ref_t`) are trusted
 more.
 
-With `method="rebuilt"` the tiers come from `physiosync.slips.tooth_tiers`: A, both edges confirmed slips; B, an
-edge is a step the pulse shape cannot judge; C, an edge is a slip placed only within an interval (not corrected); U,
-unresolved; I, steps only: slips in a recording without a sawtooth (the drift reported, not corrected), or a
-sawtooth whose tooth rests on two confirmed slips (the tooth and its creep reported, not corrected); N, no slip.
-No tooth is demoted by `apply_min_tier`: every modelled step and creep is applied and the tier says how far to trust it.
+With `method="rebuilt"` the tiers come from `physiosync.slips.tooth_tiers`, and they also say what is corrected
+(`physiosync.slips.delay_at`): A, both edges confirmed slips; B, an edge is a step the pulse shape cannot judge; C, an
+edge is a slip placed only within an interval (corrected as a ramp, weighted by its probability); all three corrected,
+each tooth creeping exactly one frame over its own length. U, unresolved, is not corrected. I, slips in a recording
+without a sawtooth (with its drift) or a sawtooth whose tooth rests on two confirmed slips (with the tooth), is reported
+and not corrected: correcting the steps without their creep turns a sawtooth into a ramp. N, no slip. `apply_min_tier`
+does not apply.

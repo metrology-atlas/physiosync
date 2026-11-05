@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.2 (November 2026)
+
+- `method="rebuilt"`: the correction is rebuilt after an end-to-end check against the arterial line (finger minus
+  arterial pulse arrival time, 2,976 VitalDB recordings), where 0.3.1 left a third of the recordings worse than no
+  correction. Each tooth between two slips now creeps exactly one frame over its own length (0.3.1: one creep rate for
+  the whole recording, so a tooth-length error built up); slips placed only within an interval are corrected as a
+  ramp weighted by their probability; unresolved teeth (tier U) are not corrected; recordings whose creep is not
+  corrected (isolated slips, a tooth from two slips: tier I) are not corrected at all, since steps without their creep
+  turn a sawtooth into a ramp. In sawtooth recordings the spread of finger minus arterial PAT falls from 14.0 ms
+  uncorrected to 9.5 ms (method="detect" 11.2), with 7.3% of recordings worse than uncorrected by more than 2 ms
+  (0.3.1: 28.9%; detect 2.9%).
+- New `delay_at(t, result)`: the delay to remove; `delay_model` gives it as segments (steps may be fractional where an
+  unresolved tooth is held at the median). Slip detection is unchanged.
+
 ## 0.3.1 (November 2026)
 
 - `method="rebuilt"`: a sawtooth found by the anchored search (a tooth from the spacing of confirmed slips) corrects

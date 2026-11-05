@@ -27,8 +27,12 @@ beats and says, for each, how it knows:
 Waveform processing (filtering, fiducial detection) is the caller's: :func:`beat_quality` takes band-passed signals and
 the beats' times and returns the per-beat quality and the R-aligned pulse and QRS shapes :func:`find_slips` needs.
 
-The method and its evaluation (manual labels, injected sawteeth, a review of the corrections) are described in the
-metrology-atlas studies ppg-sawtooth and ppg-sawtooth-slips. Times in seconds on one clock.
+:func:`delay_at` turns the result into the delay to remove: each tooth between two slips closes exactly (it creeps one
+frame over its own length), uncertain slips are ramps, unresolved teeth and recordings whose creep is not corrected are
+left alone; :func:`delay_model` gives the same as segments, with the tiers of :func:`tooth_tiers`.
+
+The method and its evaluation (manual labels, injected sawteeth, a review of the corrections, finger against arterial
+pulse arrival time) are described in the metrology-atlas study ppg-sawtooth-correction. Times in seconds on one clock.
 """
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy.ndimage import maximum_filter1d, median_filter
 
-__all__ = ["SlipOptions", "beat_quality", "delay_model", "find_slips", "tooth_tiers"]
+__all__ = ["SlipOptions", "beat_quality", "delay_at", "delay_model", "find_slips", "tooth_tiers"]
 
 FRAME = 1 / 30          # s; the frame of the PPG (30 Hz in the SNUADC PLETH of VitalDB)
 FS = 500.0              # Hz; default sampling rate of the waveforms given to beat_quality
@@ -1392,10 +1396,11 @@ def tooth_tiers(R: dict) -> list[dict]:
 
     A tooth runs from one slip to the next (the first and last from the ends of the stretch). A: both edges confirmed
     slips. B: both edges confirmed or steps the shape cannot judge, at least one such step. C: an edge is a slip placed
-    only within an interval (probability 0.5 or more; not corrected). U: unresolved (a slip with probability under 0.5
-    inside, a step against the sawtooth at an edge, or longer than 1.5 teeth, ends included). I: steps only: slips in a
-    recording without a sawtooth (the drift reported, not corrected), or a sawtooth whose tooth rests on two confirmed
-    slips (``fit["creep"] == "reported"``: the tooth and its creep reported, not corrected). N: no slip.
+    only within an interval (probability 0.5 or more; corrected as a ramp across it, weighted by the probability). U:
+    unresolved (a slip with probability under 0.5 inside, a step against the sawtooth at an edge, or longer than 1.5
+    teeth, ends included); not corrected. I: not corrected, reported: slips in a recording without a sawtooth (with
+    its drift), or a sawtooth whose tooth rests on two confirmed slips (``fit["creep"] == "reported"``, with the tooth).
+    N: no slip. See :func:`delay_at` for what is corrected.
 
     Args:
         R: A :func:`find_slips` result.
@@ -1418,11 +1423,12 @@ def tooth_tiers(R: dict) -> list[dict]:
     for a_, b_ in pairwise(edges):
         kinds = [e["kind"] for e in (a_, b_) if e["kind"] != "end"]
         if reported:
-            tier, reason = "I", f"two confirmed slips: tooth {L / 60:.1f} min ({FRAME / L * 1e6:.1f} ppm) reported, creep not corrected"
+            tier, reason = "I", (f"two confirmed slips: tooth {L / 60:.1f} min ({FRAME / L * 1e6:.1f} ppm) reported; not corrected "
+                                 "(steps without their creep would make a ramp)")
         elif not saw:
             dr = R.get("drift") or {}
-            tier, reason = "I", ("isolated slips, no sawtooth" if dr.get("ppm") is None else
-                                 f"isolated slips, no sawtooth; drift {dr['ppm']:+.1f} ppm (sd {dr['sd_ppm']:.1f}), not corrected")
+            tier, reason = "I", ("isolated slips, no sawtooth; not corrected" if dr.get("ppm") is None else
+                                 f"isolated slips, no sawtooth; not corrected; drift {dr['ppm']:+.1f} ppm (sd {dr['sd_ppm']:.1f})")
         elif "uncertain" in kinds:
             tier, reason = "C", "edge uncertain (p {:.2f})".format(min(e.get("p", 1) for e in (a_, b_) if e["kind"] == "uncertain"))
         elif "step" in kinds:
@@ -1445,49 +1451,109 @@ def tooth_tiers(R: dict) -> list[dict]:
     return out
 
 
-def delay_model(R: dict, frame_s: float = FRAME) -> dict:
-    """The sawtooth delay of a :func:`find_slips` result as piecewise-linear teeth, with their tiers.
+LONG_TOOTH = 1.5  # teeth longer than this many fitted teeth are unresolved (tier U)
 
-    Each confirmed slip, and each step the shape could not judge, steps the delay by one frame its own way; in a fitted
-    sawtooth the delay creeps back at frame / tooth, from a tooth before the first slip to a tooth after the last. Slips
-    placed only within an interval (tier C) are not corrected; recordings without a sawtooth, and sawteeth whose creep is only
-    reported (a tooth from two confirmed slips), get their steps only (the drift or creep reported, not corrected).
+
+def _delay_unmasked(t: np.ndarray, R: dict, frame_s: float) -> np.ndarray:
+    t = np.asarray(t, dtype=np.float64)
+    D = np.zeros(t.size)
+    fit = R.get("fit") or {}
+    L = fit.get("L")
+    if not R.get("sawtooth") or not L or fit.get("creep") == "reported":
+        return D
+    sign = R.get("sign", 1)
+    real = [e for e in _tier_events(R) if e["kind"] != "uncertain" or e["p"] >= 0.5]
+    if not real:
+        return D
+    N = np.zeros(t.size)
+    for e in real:
+        if e["kind"] == "uncertain":
+            N += e["p"] * np.clip((t - e["q05"]) / max(e["q95"] - e["q05"], 1e-6), 0, 1)
+        else:
+            N += (t >= e["t"]) * (e["sign"] * sign)
+    # creep, in teeth: one tooth before the first slip and after the last at the fitted tooth; between two slips the
+    # sawtooth's way exactly one frame over their spacing; next to other steps at the fitted tooth
+    segs = [(real[0]["t"] - L, real[0]["t"], 1 / L)]
+    for a_, b_ in pairwise(real):
+        g = b_["t"] - a_["t"]
+        close = g > 0 and b_["kind"] != "uncertain" and b_["sign"] == sign and (a_["kind"] == "uncertain" or a_["sign"] == sign)
+        segs.append((a_["t"], b_["t"], 1 / g if close else 1 / L))
+    segs.append((real[-1]["t"], real[-1]["t"] + L, 1 / L))
+    run = np.zeros(t.size)
+    for s0, s1, rate in segs:
+        run += rate * (np.clip(t, s0, s1) - s0)
+    return sign * frame_s * (N - run)
+
+
+def delay_at(t: np.ndarray, R: dict, frame_s: float = FRAME) -> np.ndarray:
+    """The sawtooth delay of a :func:`find_slips` result at times ``t`` (s; relative: its level is arbitrary).
+
+    Corrected only where a sawtooth is fitted and its creep is corrected (with two confirmed slips the tooth and creep
+    are reported, and without a sawtooth the drift: correcting the steps alone would turn a sawtooth that stays within
+    a frame into a ramp). There, each confirmed slip and each one-frame step the shape could not judge steps the delay
+    by a frame its own way; a slip placed only within an interval (probability 0.5 or more) steps it by that
+    probability, as a ramp across its 5-95% interval; between two slips the sawtooth's way the delay creeps back by
+    exactly a frame, at a rate set by their spacing (so each tooth closes and a tooth-length error cannot build up);
+    before the first slip and after the last, at frame / the fitted tooth, for one tooth. Teeth of tier U
+    (:func:`tooth_tiers`) are not corrected: the delay is held at its median there.
+
+    Args:
+        t: Times (s).
+        R: A :func:`find_slips` result.
+        frame_s: The frame (s).
+
+    Returns:
+        The delay (s) at ``t``.
+    """
+    t = np.asarray(t, dtype=np.float64)
+    D = _delay_unmasked(t, R, frame_s)
+    U = [x for x in tooth_tiers(R) if x["tier"] == "U"] if R.get("sawtooth") and (R.get("fit") or {}).get("creep") != "reported" else []
+    if U:
+        med = float(np.median(_delay_unmasked(np.arange(R["start"], R["end"] + 1.0, 1.0), R, frame_s)))
+        for x in U:
+            D = np.where((t >= x["t0"]) & (t < x["t1"]), med, D)
+    return D
+
+
+def delay_model(R: dict, frame_s: float = FRAME) -> dict:
+    """The sawtooth delay of a :func:`find_slips` result (:func:`delay_at`) as piecewise-linear segments, with tiers.
 
     Args:
         R: A :func:`find_slips` result.
         frame_s: The frame (s).
 
     Returns:
-        ``edges`` (the stretch's start, the slips and the creep's limits, its end; s), and per tooth (between
-        consecutive edges): ``steps`` (frames, signed, at the tooth's start), ``rates`` (s/s; positive: the delay
-        falls), ``tiers`` and ``reasons``.
+        ``edges`` (the stretch's start, every place the delay steps or changes slope, its end; s), and per segment
+        (between consecutive edges): ``steps`` (the step at the segment's start, in frames, signed; fractional where a
+        tier U tooth is held at the median), ``rates`` (s/s; positive: the delay falls), ``tiers`` and ``reasons``.
     """
     g0, g1 = float(R["start"]), float(R["end"])
-    sign = R.get("sign", 1)
+    fit = R.get("fit") or {}
+    L = fit.get("L")
+    knots = {g0, g1}
     ev = _tier_events(R)
-    real = [e for e in ev if e["kind"] != "uncertain" or e["p"] >= 0.5]
-    L = (R.get("fit") or {}).get("L")
-    cuts = {g0: 0.0, g1: 0.0}
-    for e in real:
-        if g0 < e["t"] < g1:
-            cuts[float(e["t"])] = cuts.get(float(e["t"]), 0.0) + (0.0 if e["kind"] == "uncertain" else float(e["sign"]))
-    lo = hi = None
-    if R.get("sawtooth") and L and real and (R.get("fit") or {}).get("creep") != "reported":
-        lo, hi = real[0]["t"] - L, real[-1]["t"] + L
-        for x in (lo, hi):
-            if g0 < x < g1:
-                cuts.setdefault(float(x), 0.0)
-    edges = sorted(cuts)
-    steps = [cuts[x] if i else 0.0 for i, x in enumerate(edges[:-1])]
-    rates = []
-    for a_, b_ in pairwise(edges):
-        inside = lo is not None and a_ >= lo - 1e-9 and b_ <= hi + 1e-9
-        rates.append(sign * frame_s / L if inside else 0.0)
+    for e in ev:
+        knots.add(float(e["t"]))
+        if e["kind"] == "uncertain":
+            knots.update((float(e["q05"]), float(e["q95"])))
+    if L and ev:
+        knots.update((float(ev[0]["t"] - L), float(ev[-1]["t"] + L)))
     tt = tooth_tiers(R)
+    for x in tt:
+        knots.update((float(x["t0"]), float(x["t1"])))
+    edges = sorted(k for k in knots if g0 <= k <= g1)
+    E = np.asarray(edges)
+    eps = 1e-4
+    right = delay_at(E, R, frame_s)                      # value at (just after) each edge
+    left = delay_at(E[1:] - eps, R, frame_s)             # value just before the next edge
+    rates = [-(lv - rv) / max(b - a - eps, 1e-9) for a, b, rv, lv in zip(E[:-1], E[1:], right[:-1], left)]
+    prev = np.r_[right[0], left]                          # value just before each edge (the first: no step)
+    steps = [float((right[k] - prev[k]) / frame_s) if k else 0.0 for k in range(len(edges) - 1)]
     tiers, reasons = [], []
     for a_, b_ in pairwise(edges):
         mid = 0.5 * (a_ + b_)
         x = next((y for y in tt if y["t0"] <= mid <= y["t1"]), tt[-1])
         tiers.append(x["tier"])
         reasons.append(x["reason"])
-    return {"edges": edges, "steps": steps, "rates": rates, "tiers": tiers, "reasons": reasons}
+    return {"edges": [float(x) for x in edges], "steps": steps, "rates": [float(x) for x in rates], "tiers": tiers,
+            "reasons": reasons}
