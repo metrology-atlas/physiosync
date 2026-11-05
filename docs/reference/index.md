@@ -6,6 +6,7 @@ modules.
 | Module | What it does |
 |---|---|
 | [ecg_ppg](ecg_ppg.md) | ECG–PPG delay: beat matching, slip detection, the fitted delay model and its tiers, setup offsets |
+| [slips](slips.md) | The rebuilt frame-slip finder: beat quality, slips with their evidence, tooth tiers, the delay model (`fit_ecg_ppg_delay(method="rebuilt")`) |
 | [stamps](stamps.md) | Record-stamp sawtooths: one rate and one offset per stretch, corrected times |
 | [network](network.md) | Networks of clock links: loop misclosures, least-squares adjustment, normalised residuals |
 | [frames](frames.md) | Hidden frame clocks: change spectrum, lines, interval locking, the frame clock's rate |

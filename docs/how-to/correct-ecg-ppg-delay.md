@@ -70,7 +70,23 @@ plan = fit.timing_plan(start_t=0.0, n=500 * 7200, fs=500.0)
 print(len(plan), "segments; first:", plan[0]["count"], "samples at", round(plan[0]["fs"], 4), "Hz")
 ```
 
-## 4. Many recordings: one offset per setup
+## 4. The rebuilt method (frame 1/30 s, SNUADC-type PPG)
+
+`method="rebuilt"` finds the slips from the whole pulse rather than one fiducial: it needs each beat's PPG foot,
+upstroke and peak, the per-beat quality from `beat_quality` (from your filtered ECG and PPG waveforms) and, where
+there is one, the arterial upstroke per beat (NaN where absent). The arterial line confirms or vetoes a step; slips it
+cannot time are kept in `m.uncertain` with a probability and are not corrected; a recording with slips but no sawtooth
+gets tier I (its steps corrected, its drift reported in `m.drift`).
+
+```python
+# requires your waveforms: r (R peaks), fid (foot, up, peak per beat), art (arterial upstroke or NaN), the signals
+q = ps.beat_quality(r, ecg_t0, ecg_band, ecg_raw, ppg_t0, ppg_band, ppg_raw, fs=500.0)
+m = ps.fit_ecg_ppg_delay(r, fid["up"], adopted_pat_s=0.25, matched=True, method="rebuilt",
+                         fiducials=fid, beat_quality=q, ref_t=art)
+m.quality_intervals()   # tiers A, B, C, U, I, N
+```
+
+## 5. Many recordings: one offset per setup
 
 A single recording cannot separate the hardware delay from the patient's PAT. Across many recordings made
 with the same equipment, the median recording level minus the adopted PAT estimates the setup's delay:

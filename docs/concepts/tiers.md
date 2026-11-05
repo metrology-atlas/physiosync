@@ -22,3 +22,8 @@ teeth are at most C (B where the arterial reference confirmed the slips), and no
 **Why inserted slips are capped.** Checked against arterial pressure, about a third of slips inferred
 from the ECG–PPG series alone were not real. Slips confirmed by a reference signal (`ref_t`) are trusted
 more.
+
+With `method="rebuilt"` the tiers come from `physiosync.slips.tooth_tiers`: A, both edges confirmed slips; B, an
+edge is a step the pulse shape cannot judge; C, an edge is a slip placed only within an interval (not corrected); U,
+unresolved; I, slips in a recording without a sawtooth (steps only; the drift reported, not corrected); N, no slip.
+No tooth is demoted by `apply_min_tier`: every modelled step and creep is applied and the tier says how far to trust it.

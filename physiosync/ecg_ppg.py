@@ -31,7 +31,13 @@ ends get the median rate of the full teeth (else ``rate_prior_ppm``, the known r
 setup), capped to one frame of creep. With slips but no rate the sawtooth is left alone. Each tooth
 records where its rate came from.
 
-Only numpy. Times in seconds on the ECG's clock.
+Two methods. ``method="detect"`` (the default) finds slips as above from beat times alone. ``method="rebuilt"``
+uses :func:`physiosync.slips.find_slips` (the foot, upstroke and peak of each pulse, beat quality and pulse shapes,
+the arterial line where there is one; both sawtooth directions; see that module) and builds the delay from its slips
+(:func:`physiosync.slips.delay_model`): tiers A, B, C, U, I and N, every modelled step and creep applied, slips placed
+only within an interval not corrected, the drift of recordings without a sawtooth reported in ``drift``.
+
+Times in seconds on the ECG's clock.
 """
 
 from __future__ import annotations
@@ -40,6 +46,8 @@ from dataclasses import asdict, dataclass, field
 from itertools import pairwise
 
 import numpy as np
+
+from .slips import FRAME, SlipOptions, delay_model, find_slips
 
 ORDER = "ABCNU"  # tiers, best first
 
@@ -197,7 +205,14 @@ class EcgPpgDelay:
         sawtooth: Whether a sawtooth is modelled (``False``: offset only).
         tooth_tier: Confidence tier of each tooth: A, B, C (corrected), N (none seen) or U (unresolved).
         tooth_reason: Why each tooth has its tier.
-        apply_min_tier: Teeth below this tier keep the offset only.
+        apply_min_tier: Teeth below this tier keep the offset only (``method="detect"``).
+        method: ``"detect"`` or ``"rebuilt"`` (the method of the fit).
+        tooth_steps: ``method="rebuilt"``: the step at the start of each tooth (frames, signed: a reversed sawtooth
+            steps down); empty for ``"detect"`` (one frame up at every edge but the first).
+        direction: ``method="rebuilt"``: ``"up"`` or ``"down"``, the sawtooth's direction.
+        slips: ``method="rebuilt"``: the accepted slips with how each was found (``kind``, ``sign``, bracket).
+        uncertain: ``method="rebuilt"``: slips placed only within an interval, with their probability (not corrected).
+        drift: ``method="rebuilt"``, no sawtooth fitted: the reported drift (ppm, sd; not corrected).
         qc: Fit diagnostics, e.g. ``raw_level_s`` (median PAT with the sawtooth removed, no offset),
             ``offset_basis`` and ``recording_rate_ppm``.
     """
@@ -216,6 +231,12 @@ class EcgPpgDelay:
     tooth_tier: list[str] = field(default_factory=list)     # A, B, C (corrected), N (none seen), U (unresolved)
     tooth_reason: list[str] = field(default_factory=list)
     apply_min_tier: str = "B"                                # teeth below this keep the offset only
+    method: str = "detect"
+    tooth_steps: list[float] = field(default_factory=list)  # rebuilt: frames at each tooth's start, signed
+    direction: str | None = None
+    slips: list[dict] = field(default_factory=list)
+    uncertain: list[dict] = field(default_factory=list)
+    drift: dict | None = None
     qc: dict = field(default_factory=dict)
 
     # the sawtooth part, before the offset; zero at t_start
@@ -225,6 +246,12 @@ class EcgPpgDelay:
             return np.zeros_like(t)
         edges = np.asarray(self.tooth_edges)
         rate = np.asarray(self.tooth_rate)
+        if self.method == "rebuilt":
+            # each edge steps by its own signed number of frames (0 for slips not corrected); no tooth masked
+            k = np.clip(np.searchsorted(edges, t, side="right") - 1, 0, rate.size - 1)
+            lvl = self.frame_s * np.cumsum(np.asarray(self.tooth_steps, dtype=np.float64))
+            acc = np.r_[0.0, np.cumsum(rate * np.diff(edges))]
+            return lvl[k] - (acc[k] + rate[k] * (t - edges[k]))
         k = np.clip(np.searchsorted(edges, t, side="right") - 1, 0, rate.size - 1)
         # accumulated rate integral up to each tooth start
         acc = np.r_[0.0, np.cumsum(rate * np.diff(edges))]
@@ -243,10 +270,14 @@ class EcgPpgDelay:
             k: Tooth index.
 
         Returns:
-            ``True`` when the tooth's tier is at or above :attr:`apply_min_tier`.
+            ``method="detect"``: ``True`` when the tooth's tier is at or above :attr:`apply_min_tier`.
+            ``method="rebuilt"``: the whole model is applied, so ``True`` for every tooth but N (no slip); the tier
+            then says how far to trust it.
         """
-        order = {"A": 0, "B": 1, "C": 2}
         t = self.tooth_tier[k] if k < len(self.tooth_tier) else "U"
+        if self.method == "rebuilt":
+            return t != "N"
+        order = {"A": 0, "B": 1, "C": 2}
         return t in order and order[t] <= order.get(self.apply_min_tier, 1)
 
     def quality_intervals(self) -> list[dict]:
@@ -254,6 +285,8 @@ class EcgPpgDelay:
 
         Tier A, B or C: sawtooth corrected (high, moderate or low confidence). N: no sawtooth seen (offset only).
         U: possibly affected but not corrected (offset only). Tiers below :attr:`apply_min_tier` are reported as U.
+        ``method="rebuilt"``: tiers A, B, C, U, I (isolated slips, no sawtooth) and N as fitted, none demoted; C, U and
+        I teeth carry the steps and creep that were modelled (a slip placed only within an interval is not a step).
 
         Returns:
             One dict per interval (ECG time, s): ``start``, ``end``, ``tier``, ``applied``, ``teeth``,
@@ -264,8 +297,8 @@ class EcgPpgDelay:
         out: list[dict] = []
         for k in range(len(edges) - 1):
             tier = tiers[k]
-            applied = tier in ("A", "B", "C") and self.applied(k)
-            if tier in ("A", "B", "C") and not applied:
+            applied = self.applied(k) if self.method == "rebuilt" else tier in ("A", "B", "C") and self.applied(k)
+            if self.method != "rebuilt" and tier in ("A", "B", "C") and not applied:
                 tier, reason = "U", f"below {self.apply_min_tier}: " + (self.tooth_reason[k] if k < len(self.tooth_reason) else "")
             else:
                 reason = self.tooth_reason[k] if k < len(self.tooth_reason) else ""
@@ -365,7 +398,9 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
                       min_tooth_s: float = 60.0, rate_range_ppm: tuple[float, float] = (5.0, 100.0),
                       apply_min_tier: str = "B", tier_rules: TierRules | None = None,
                       ref_t: np.ndarray | None = None, ref_max_step_s: float = 0.010,
-                      predict_slips: bool = True, offset_s: float | None = None) -> EcgPpgDelay:
+                      predict_slips: bool = True, offset_s: float | None = None, method: str = "detect",
+                      fiducials: dict | None = None, beat_quality: dict | None = None,
+                      slip_options: SlipOptions | None = None) -> EcgPpgDelay:
     """Fit the PPG delay model from R-peak and PPG fiducial times on the same clock.
 
     Pairs the beats (unless ``matched``), detects slips, measures each tooth's creep rate, sets the offset
@@ -398,10 +433,21 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
         offset_s: The combined hardware and filter delay, if known from outside the recording (e.g. a setup's
             median from :func:`setup_offsets`). The recording then keeps its own PAT level; without it, the
             recording is snapped so that its corrected median equals ``adopted_pat_s``.
+        method: ``"detect"`` (default) or ``"rebuilt"`` (:func:`physiosync.slips.find_slips`; needs ``matched``,
+            ``fiducials`` and ``beat_quality``; ``ref_t`` is then the arterial upstroke per beat, NaN where absent).
+            ``threshold_s``, ``smooth``, ``min_tooth_s``, ``rate_range_ppm``, ``rate_prior_ppm``,
+            ``apply_min_tier``, ``tier_rules``, ``ref_max_step_s`` and ``predict_slips`` apply to ``"detect"`` only.
+        fiducials: ``method="rebuilt"``: per beat, the PPG ``foot``, ``up`` and ``peak`` times (s; optionally
+            ``down50``), NaN where absent.
+        beat_quality: ``method="rebuilt"``: :func:`physiosync.slips.beat_quality` for the same beats.
+        slip_options: ``method="rebuilt"``: :class:`physiosync.slips.SlipOptions` (e.g. the setup's tooth in
+            ``prior_by_sign``). Default: the evaluated method.
 
     Returns:
         The fitted :class:`EcgPpgDelay`.
     """
+    if method not in ("detect", "rebuilt"):
+        raise ValueError(f"method must be 'detect' or 'rebuilt', not {method!r}")
     if adopted_pat_s is None or not np.isfinite(adopted_pat_s):
         raise ValueError("adopted_pat_s must be given: the population mean PAT to shift to")
     r_t = np.asarray(r_t, dtype=np.float64)
@@ -409,6 +455,8 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
     ref = None if ref_t is None else np.asarray(ref_t, dtype=np.float64)
     if ref is not None and ref.shape != r_t.shape:
         raise ValueError("ref_t needs one value (or NaN) per R-peak of r_t")
+    if method == "rebuilt" and not matched:
+        raise ValueError("method='rebuilt' needs matched=True: r_t, ppg_t, fiducials and beat_quality per beat")
     if matched:
         if r_t.shape != ppg_t.shape:
             raise ValueError("matched=True needs r_t and ppg_t of the same length")
@@ -423,7 +471,15 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
     m = EcgPpgDelay(adopted_pat_s=float(adopted_pat_s), offset_s=0.0, frame_s=frame_s, t_start=float(tr[0]),
                     t_end=float(tr[-1]), sawtooth=sawtooth, apply_min_tier=apply_min_tier)
     m.tooth_edges = [m.t_start, m.t_end]
-    if sawtooth:
+    if method == "rebuilt":
+        m.method = "rebuilt"
+        if sawtooth:
+            _fit_rebuilt(m, tr, tref, fiducials, beat_quality, slip_options, frame_s)
+        fin = np.isfinite(pat)  # the slips are found from every beat; the offset from beats with a PPG time
+        if fin.sum() < 10:
+            raise ValueError("too few beats with a PPG time")
+        tr, pat = tr[fin], pat[fin]
+    elif sawtooth:
         s = detect_slips(tr, pat, frame_s=frame_s, threshold_s=threshold_s, smooth=smooth)
         m.frame_s = s["frame_s"]
         slips = list(np.asarray(s["t"], dtype=np.float64))
@@ -456,8 +512,12 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
     # the single combined offset: everything above the adopted population mean, taken where the timing
     # is known (the corrected teeth) when there are enough of them; else over all beats
     k_of = np.clip(np.searchsorted(m.tooth_edges, tr, side="right") - 1, 0, max(len(m.tooth_edges) - 2, 0))
-    in_applied = np.array([m.applied(int(k)) for k in range(max(len(m.tooth_edges) - 1, 1))])[k_of] \
-        if m.sawtooth and m.tooth_tier else np.zeros(tr.size, bool)
+    if m.method == "rebuilt":  # where the timing is known: confirmed teeth, steps-only recordings, no slip
+        ok_k = [m.tooth_tier[k] in ("A", "B", "I", "N") if k < len(m.tooth_tier) else False
+                for k in range(max(len(m.tooth_edges) - 1, 1))]
+    else:
+        ok_k = [m.applied(int(k)) for k in range(max(len(m.tooth_edges) - 1, 1))]
+    in_applied = np.array(ok_k)[k_of] if m.sawtooth and m.tooth_tier else np.zeros(tr.size, bool)
     use = in_applied if in_applied.sum() >= max(100, 0.2 * tr.size) else np.ones(tr.size, bool)
     # this recording's own level (sawtooth removed), whatever offset is then used
     m.qc["raw_level_s"] = float(np.median(resid[use]))
@@ -466,7 +526,19 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
         m.qc["offset_basis"] = "caller"
     else:
         m.offset_s = float(np.median(resid[use]) - adopted_pat_s)
-        m.qc["offset_basis"] = "corrected teeth" if use is in_applied else "all beats"
+        m.qc["offset_basis"] = ("confident teeth" if m.method == "rebuilt" else "corrected teeth") \
+            if use is in_applied else "all beats"
+    if method == "rebuilt":
+        m.qc.update({
+            "beats": int(tr.size), "pat_median_raw_s": float(np.median(pat)),
+            "pat_median_corrected_s": float(np.median(pat - m.shift(tr))),
+            "n_slips": len(m.slips_t), "n_uncertain": len(m.uncertain),
+            "n_steps": int(sum(1 for x in m.tooth_steps if x)),
+            "sawtooth_p2p_raw_ms": _p2p(tr, pat), "sawtooth_p2p_corrected_ms": _p2p(tr, pat - m.shift(tr)),
+            "tier_time_s": {t: float(sum(q["end"] - q["start"] for q in m.quality_intervals() if q["tier"] == t))
+                            for t in ("A", "B", "C", "I", "N", "U")},
+        })
+        return m
     m.qc["rate_prior_ppm"] = rate_prior_ppm
     m.qc.update({
         "beats": int(tr.size), "pat_median_raw_s": float(np.median(pat)),
@@ -478,6 +550,36 @@ def fit_ecg_ppg_delay(r_t: np.ndarray, ppg_t: np.ndarray, *, adopted_pat_s: floa
                         for t in ("A", "B", "C", "N", "U")},
     })
     return m
+
+
+def _fit_rebuilt(m: EcgPpgDelay, tr: np.ndarray, tref: np.ndarray | None, fiducials: dict | None,
+                 beat_quality: dict | None, slip_options: SlipOptions | None, frame_s: float | None) -> None:
+    """Fill ``m`` from :func:`physiosync.slips.find_slips` and :func:`physiosync.slips.delay_model`."""
+    if fiducials is None or beat_quality is None:
+        raise ValueError("method='rebuilt' needs fiducials and beat_quality")
+    if frame_s is not None and abs(frame_s - FRAME) > 1e-9:
+        raise ValueError(f"method='rebuilt' is calibrated for a {FRAME * 1e3:.1f} ms frame, not {frame_s * 1e3:.1f} ms")
+    for k, v in fiducials.items():
+        if np.shape(v) != tr.shape:
+            raise ValueError(f"fiducials[{k!r}] needs one value per matched beat")
+    R = find_slips(tr, fiducials, beat_quality, art_t=tref, opts=slip_options)
+    dm = delay_model(R, FRAME)
+    m.frame_s = FRAME
+    m.t_start, m.t_end = float(R["start"]), float(R["end"])
+    m.tooth_edges = [float(x) for x in dm["edges"]]
+    m.tooth_steps = [float(x) for x in dm["steps"]]
+    m.tooth_rate = [float(x) for x in dm["rates"]]
+    m.tooth_tier, m.tooth_reason = list(dm["tiers"]), list(dm["reasons"])
+    m.tooth_source = ["fitted tooth" if r else "no creep" for r in m.tooth_rate]
+    m.direction = R.get("direction")
+    m.slips = [dict(x) for x in R.get("slips", [])]
+    m.slips_t = sorted(float(x["t"]) for x in m.slips)
+    m.uncertain = [dict(x) for x in R.get("uncertain", [])]
+    m.drift = None if R.get("sawtooth") else R.get("drift")
+    fit = R.get("fit") or {}
+    m.qc.update({"sawtooth_fitted": bool(R.get("sawtooth")), "tooth_s": fit.get("L"),
+                 "recording_rate_ppm": fit.get("rate_ppm"), "tooth_from": fit.get("source"),
+                 "good_share": R.get("good_share"), "gating": R.get("gating")})
 
 
 def setup_offsets(levels: dict, setups: dict, *, adopted_pat_s: float, min_recordings: int = 3,
