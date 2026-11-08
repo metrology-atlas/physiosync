@@ -25,6 +25,10 @@ print(round(clock["rate_ppm"]), clock["rate_source"], clock["corrections"]["even
 The result gives the device's rate error (`rate_ppm`, from whole teeth when there are enough, otherwise
 from a line fit), the stretches between real gaps (`breaks`) with one offset each, and the correction events.
 
+A line fit is not a measured rate: with one correction the residual is a staircase of a single step, and the
+fitted slope depends on where the step falls. Check `clock["rate_measured"]`; when it is False, pass a rate
+from elsewhere (the same device's rate in its other recordings) as `rate_ppm`.
+
 ## Place samples on the fitted line
 
 ```python

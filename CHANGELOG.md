@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.4 (November 2026)
+
+- `stamp_clock` returns `rate_measured`: True for a rate from whole teeth or given, False for the line-fit fallback.
+  With one correction the residual is a staircase of one step and the fitted slope depends on where the step falls,
+  not on the device's rate (off by tens of ppm on synthetic step-mode recordings). The behaviour is unchanged; the
+  flag and the docstring make the fallback impossible to mistake for a measurement.
+
 ## 0.3.3 (November 2026)
 
 - `method="rebuilt"` measurement records and labels: `pat_measurement_model` and `sawtooth_labels` give one segment per

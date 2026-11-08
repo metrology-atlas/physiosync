@@ -110,3 +110,18 @@ def test_samples_lost_at_corrections():
     assert np.ptp(err_fixed) < 0.001
     assert abs(fixed["rate_ppm"] - rate * 1e6) < 0.5 < abs(plain["rate_ppm"] - rate * 1e6)
     assert len(fixed["loss_records"]) == dropped
+
+
+def test_one_correction_is_not_a_measured_rate():
+    fs, thr, rate = 500.0, 0.48, -64e-6
+    starts = np.arange(0, int(3 * 3600 * fs), 100, dtype=float)
+    c = starts / fs
+    for phase, measured in ((0.2, False), (0.45, True)):
+        acc = rate * c - phase                             # PC minus count, growing (device fast)
+        stamps = c - thr * np.floor(-acc / thr)            # staircase: a -thr step each time thr is reached
+        clk = stamp_clock(stamps, starts, fs, correction_sign=-1)
+        assert clk["rate_measured"] is measured
+        if measured:
+            assert abs(clk["rate_ppm"] - rate * 1e6) < 0.5
+    g = stamp_clock(stamps, starts, fs, correction_sign=-1, rate_ppm=-64.0)
+    assert g["rate_measured"] and g["rate_source"] == "given"

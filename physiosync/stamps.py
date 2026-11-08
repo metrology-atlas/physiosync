@@ -39,6 +39,12 @@ def stamp_clock(record_times: np.ndarray, record_starts: np.ndarray, fs: float, 
     event), or, with fewer than ``min_teeth`` teeth, from a least-squares line through the residual staircase,
     or is ``rate_ppm`` when given. The per-stretch offsets put the line through the middle of the sawtooth.
 
+    A line fit is not a measured rate. Where the stamps follow the sample count between corrections, the
+    residual is flat between steps, so a stretch with one correction is a staircase of one step: the fitted
+    slope then depends on where the step falls, not on the device's rate (on synthetic step-mode recordings it
+    is off by tens of ppm). ``rate_measured`` is False in that case; take the rate from elsewhere, for example
+    the same device's rate in its other recordings, and pass it as ``rate_ppm``.
+
     Args:
         record_times: Stamp of each record's first sample (s), in recording order.
         record_starts: Index of that sample in the track (the cumulative sample count).
@@ -62,6 +68,8 @@ def stamp_clock(record_times: np.ndarray, record_starts: np.ndarray, fs: float, 
         - ``fs``: the nominal rate (Hz).
         - ``rate_ppm``: the device's rate error; positive means its samples last longer than nominal.
         - ``rate_source``: ``"teeth"``, ``"fit"`` or ``"given"``.
+        - ``rate_measured``: True when the rate comes from whole teeth or is given; False for a line fit,
+          which is not a measured rate (see above).
         - ``teeth``: number of whole teeth used.
         - ``breaks``: record indices that start a stretch (the first is 0).
         - ``offsets_s``: offset of each stretch (s).
@@ -153,7 +161,8 @@ def stamp_clock(record_times: np.ndarray, record_starts: np.ndarray, fs: float, 
     a = np.bincount(seg[use], (res - lost - b * c)[use], minlength=n_seg) / np.where(cnt > 0, cnt, np.nan)
     a = np.where(np.isfinite(a), a, 0.0)
     r = res - (a[seg] + b * c + lost)
-    return {"t0": t0, "fs": float(fs), "rate_ppm": b * 1e6, "rate_source": source, "teeth": int(dur.size),
+    return {"t0": t0, "fs": float(fs), "rate_ppm": b * 1e6, "rate_source": source,
+            "rate_measured": source in ("teeth", "given"), "teeth": int(dur.size),
             "breaks": breaks, "offsets_s": a,
             "corrections": {"events": int(ev_at.size), "event_times_s": (t0 + c[ev_at]).tolist(),
                             "median_event_s": float(np.median(ev_size)) if ev_size.size else None,
